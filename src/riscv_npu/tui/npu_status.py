@@ -1,0 +1,1 @@
+"""TUI NPU status panel."""

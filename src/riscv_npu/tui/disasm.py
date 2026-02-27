@@ -1,0 +1,1 @@
+"""TUI disassembly panel."""

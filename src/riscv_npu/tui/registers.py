@@ -1,0 +1,1 @@
+"""TUI register display panel."""

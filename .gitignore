@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+*.elf
+*.o
+*.bin
+tests/fixtures/riscv-tests/*.elf
+uv.lock
