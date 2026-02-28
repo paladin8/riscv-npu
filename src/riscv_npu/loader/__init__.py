@@ -1,5 +1,5 @@
 """ELF loader module."""
 
-from .elf import ElfProgram, ElfSegment, load_elf, parse_elf
+from .elf import ElfProgram, ElfSegment, find_symbol, load_elf, parse_elf
 
-__all__ = ["ElfProgram", "ElfSegment", "load_elf", "parse_elf"]
+__all__ = ["ElfProgram", "ElfSegment", "find_symbol", "load_elf", "parse_elf"]

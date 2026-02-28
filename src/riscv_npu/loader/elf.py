@@ -16,10 +16,14 @@ _ELFCLASS32 = 1
 _ELFDATA2LSB = 1  # Little-endian
 _EM_RISCV = 0xF3
 _PT_LOAD = 1
+_SHT_SYMTAB = 2
+_SHT_STRTAB = 3
 
 # ELF32 header size and program header entry size
 _ELF32_EHDR_SIZE = 52
 _ELF32_PHDR_SIZE = 32
+_ELF32_SHDR_SIZE = 40
+_ELF32_SYM_SIZE = 16
 
 
 @dataclass(frozen=True)
@@ -132,6 +136,89 @@ def parse_elf(data: bytes) -> ElfProgram:
         segments.append(ElfSegment(vaddr=p_vaddr, data=seg_data, memsz=p_memsz))
 
     return ElfProgram(entry=e_entry, segments=segments)
+
+
+def find_symbol(data: bytes, name: str) -> int | None:
+    """Find the address of a named symbol in an ELF binary.
+
+    Parses the ELF section headers to locate the symbol table (SHT_SYMTAB)
+    and its associated string table, then searches for the named symbol.
+
+    Args:
+        data: Raw bytes of the ELF file.
+        name: Symbol name to search for.
+
+    Returns:
+        The symbol's virtual address, or None if not found.
+    """
+    if len(data) < _ELF32_EHDR_SIZE:
+        return None
+
+    # Read section header table location from ELF header
+    # e_shoff at offset 32 (4 bytes)
+    (e_shoff,) = struct.unpack_from("<I", data, 32)
+    # e_shentsize at offset 46 (2 bytes)
+    (e_shentsize,) = struct.unpack_from("<H", data, 46)
+    # e_shnum at offset 48 (2 bytes)
+    (e_shnum,) = struct.unpack_from("<H", data, 48)
+
+    if e_shoff == 0 or e_shnum == 0:
+        return None
+
+    # Find the SHT_SYMTAB section
+    for i in range(e_shnum):
+        sh_offset = e_shoff + i * e_shentsize
+        if sh_offset + _ELF32_SHDR_SIZE > len(data):
+            break
+
+        # Section header: sh_name, sh_type, sh_flags, sh_addr,
+        #                  sh_offset, sh_size, sh_link, sh_info,
+        #                  sh_addralign, sh_entsize
+        (sh_name_idx, sh_type, _sh_flags, _sh_addr, sh_file_offset,
+         sh_size, sh_link, _sh_info, _sh_addralign,
+         sh_entsize) = struct.unpack_from("<IIIIIIIIII", data, sh_offset)
+
+        if sh_type != _SHT_SYMTAB:
+            continue
+
+        # sh_link points to the string table section index
+        strtab_sh_offset = e_shoff + sh_link * e_shentsize
+        if strtab_sh_offset + _ELF32_SHDR_SIZE > len(data):
+            continue
+
+        (_strtab_name, _strtab_type, _strtab_flags, _strtab_addr,
+         strtab_file_offset, strtab_size, *_rest) = struct.unpack_from(
+            "<IIIIII", data, strtab_sh_offset
+        )
+
+        if sh_entsize == 0:
+            sh_entsize = _ELF32_SYM_SIZE
+
+        # Iterate over symbols
+        num_syms = sh_size // sh_entsize
+        for j in range(num_syms):
+            sym_offset = sh_file_offset + j * sh_entsize
+            if sym_offset + _ELF32_SYM_SIZE > len(data):
+                break
+
+            # ELF32_Sym: st_name (4), st_value (4), st_size (4),
+            #            st_info (1), st_other (1), st_shndx (2)
+            (st_name, st_value, _st_size, _st_info, _st_other,
+             _st_shndx) = struct.unpack_from("<IIIBBH", data, sym_offset)
+
+            # Read the symbol name from the string table
+            str_start = strtab_file_offset + st_name
+            if str_start >= len(data):
+                continue
+
+            # Find null terminator
+            str_end = data.index(b"\x00", str_start)
+            sym_name = data[str_start:str_end].decode("ascii", errors="replace")
+
+            if sym_name == name:
+                return st_value
+
+    return None
 
 
 def load_elf(path: str, ram: RAM) -> int:

@@ -28,12 +28,11 @@ Phase 2 — IN PROGRESS. Spec expanded with 7 deliverables.
 None.
 
 ## Recent changes
-- Expanded Phase 2 spec with 7 deliverables, implementation details, test requirements
-- Implemented ELF parser (parse_elf, ElfProgram, ElfSegment) with 13 tests
-- Implemented RAM.load_segment() and load_elf() with 8 more tests
-- Implemented M extension (8 instructions) with 32 tests covering all edge cases
-- Implemented CSR shim (CSRRW/CSRRS/CSRRC + I variants, tohost) with 10 tests
-- Updated CLI to detect ELF files, set PC=entry, SP=0x80FFFFF0
-- Created firmware scaffolding: common/ (start.s, linker.ld, Makefile), fibonacci/ (main.c, Makefile)
-- fibonacci.elf compiles and runs correctly: fib(10) = 55
-- 215 tests passing total
+- Phase 2 complete: all 7 deliverables implemented
+- ELF parser with find_symbol for tohost detection
+- M extension (8 instructions) with edge cases
+- CSR shim expanded: supports mtvec/mepc/mcause for trap handling, mret instruction
+- ECALL traps to mtvec when configured (not just halts)
+- Compliance: 42 rv32ui-p-* and 8 rv32um-p-* tests all pass
+- firmware/fibonacci compiles and produces correct result (fib(10)=55)
+- 268 tests passing total

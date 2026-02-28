@@ -5,7 +5,7 @@ import tempfile
 
 import pytest
 
-from riscv_npu.loader.elf import ElfProgram, ElfSegment, load_elf, parse_elf
+from riscv_npu.loader.elf import ElfProgram, ElfSegment, find_symbol, load_elf, parse_elf
 from riscv_npu.memory.ram import RAM
 
 
@@ -307,3 +307,31 @@ class TestLoadElf:
 
         assert ram.read32(0x80000000) == 0x04030201
         assert ram.read32(0x80010000) == 0x08070605
+
+
+class TestFindSymbol:
+    def test_find_tohost_in_real_elf(self) -> None:
+        """find_symbol can locate 'tohost' in a real riscv-tests ELF."""
+        import pathlib
+        elf_path = pathlib.Path(__file__).parent.parent / "fixtures" / "riscv-tests" / "rv32ui-p-add"
+        if not elf_path.exists():
+            pytest.skip("riscv-tests not built")
+        data = elf_path.read_bytes()
+        addr = find_symbol(data, "tohost")
+        assert addr is not None
+        assert addr == 0x80001000
+
+    def test_symbol_not_found(self) -> None:
+        """find_symbol returns None for nonexistent symbols."""
+        elf = _build_elf_with_segments(
+            [{"vaddr": 0x80000000, "data": b"\x00" * 4}],
+        )
+        assert find_symbol(elf, "nonexistent") is None
+
+    def test_find_symbol_in_minimal_elf(self) -> None:
+        """find_symbol returns None for ELF without symbol table."""
+        elf = _build_elf_with_segments(
+            [{"vaddr": 0x80000000, "data": b"\x00" * 4}],
+        )
+        # Our minimal ELF has no section headers, so no symbol table
+        assert find_symbol(elf, "tohost") is None

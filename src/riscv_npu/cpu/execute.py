@@ -67,16 +67,7 @@ def execute(inst: Instruction, cpu: CPU) -> int:
         return (rs1_val + to_signed(inst.imm)) & 0xFFFFFFFE
 
     elif inst.opcode == OP_SYSTEM:
-        if inst.funct3 == 0:
-            # ECALL / EBREAK (funct3 == 0, distinguished by imm)
-            if inst.imm == 0:  # ECALL
-                cpu.halted = True
-            elif inst.imm == 1:  # EBREAK
-                cpu.halted = True
-        else:
-            # CSR instructions (funct3 != 0)
-            _exec_csr(inst, cpu)
-        return pc + 4
+        return _exec_system(inst, cpu, pc)
 
     elif inst.opcode == OP_FENCE:
         return pc + 4
@@ -308,16 +299,74 @@ def _exec_branch(inst: Instruction, regs: RegisterFile, pc: int) -> int:
     return pc + 4
 
 
-# CSR address for riscv-tests tohost signaling
-_CSR_TOHOST = 0x51E
+# MRET instruction imm field value
+_IMM_MRET = 0x302
+# ECALL cause codes
+_CAUSE_MACHINE_ECALL = 11
+_CAUSE_USER_ECALL = 8
+# CSR addresses used by trap handling
+_CSR_MTVEC = 0x305
+_CSR_MEPC = 0x341
+_CSR_MCAUSE = 0x342
+
+
+def _exec_system(inst: Instruction, cpu: CPU, pc: int) -> int:
+    """Execute SYSTEM instructions (ecall, ebreak, mret, CSR ops).
+
+    Dispatches based on funct3:
+    - funct3==0: ECALL, EBREAK, MRET (distinguished by imm)
+    - funct3!=0: CSR instructions (CSRRW, CSRRS, CSRRC and I variants)
+    """
+    if inst.funct3 == 0:
+        if inst.imm == 0:  # ECALL
+            return _exec_ecall(cpu, pc)
+        elif inst.imm == 1:  # EBREAK
+            cpu.halted = True
+            return pc + 4
+        elif (inst.imm & 0xFFF) == _IMM_MRET:  # MRET
+            return _exec_mret(cpu)
+        else:
+            # Unknown system instruction, treat as NOP
+            return pc + 4
+    else:
+        _exec_csr(inst, cpu)
+        return pc + 4
+
+
+def _exec_ecall(cpu: CPU, pc: int) -> int:
+    """Handle ECALL: trap to machine mode via mtvec.
+
+    If mtvec is configured (non-zero), triggers a trap by setting mcause
+    and mepc, then jumping to the trap vector. Otherwise, halts the CPU
+    (simple mode for non-compliance programs).
+    """
+    mtvec = cpu.csr_read(_CSR_MTVEC)
+    if mtvec != 0:
+        # Trap: set cause and return address, jump to trap vector
+        cpu.csr_write(_CSR_MCAUSE, _CAUSE_MACHINE_ECALL)
+        cpu.csr_write(_CSR_MEPC, pc)
+        return mtvec & 0xFFFFFFFF
+    else:
+        # No trap vector configured: just halt (simple mode)
+        cpu.halted = True
+        return pc + 4
+
+
+def _exec_mret(cpu: CPU) -> int:
+    """Handle MRET: return from machine-mode trap handler.
+
+    Jumps to the address stored in mepc.
+    """
+    mepc = cpu.csr_read(_CSR_MEPC)
+    return mepc & 0xFFFFFFFF
 
 
 def _exec_csr(inst: Instruction, cpu: CPU) -> None:
-    """Execute CSR instructions (minimal shim for riscv-tests compliance).
+    """Execute CSR instructions.
 
-    Handles CSRRW, CSRRS, CSRRC and their immediate variants.
-    Only CSR 0x51E (tohost) is actually tracked; all other CSRs
-    return 0 on read and discard writes.
+    Handles CSRRW, CSRRS, CSRRC and their immediate variants (CSRRWI,
+    CSRRSI, CSRRCI). Uses the CPU's csr_read/csr_write methods which
+    route to the CSR register storage.
     """
     regs = cpu.registers
     f3 = inst.funct3
@@ -325,12 +374,9 @@ def _exec_csr(inst: Instruction, cpu: CPU) -> None:
     csr_addr = inst.imm & 0xFFF
 
     # Read the current CSR value
-    if csr_addr == _CSR_TOHOST:
-        old_val = cpu.tohost
-    else:
-        old_val = 0
+    old_val = cpu.csr_read(csr_addr)
 
-    # Determine the source value and new CSR value
+    # Determine the source value
     if f3 in (0b001, 0b010, 0b011):
         # CSRRW (001), CSRRS (010), CSRRC (011): source is rs1
         src = regs.read(inst.rs1)
@@ -356,8 +402,4 @@ def _exec_csr(inst: Instruction, cpu: CPU) -> None:
     regs.write(inst.rd, old_val)
 
     # Write new value to CSR
-    if csr_addr == _CSR_TOHOST:
-        cpu.tohost = new_val
-        if new_val != 0:
-            cpu.halted = True
-    # All other CSRs: writes are silently discarded
+    cpu.csr_write(csr_addr, new_val)
