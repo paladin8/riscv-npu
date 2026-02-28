@@ -1,7 +1,11 @@
 # Project State
 
 ## Current phase
-Phase 1 — COMPLETE. All 11 deliverables implemented. 145 tests passing.
+Phase 2 — IN PROGRESS. Spec expanded with 7 deliverables.
+
+## Phase 1 (COMPLETE)
+- All RV32I implemented: decode, execute, registers, RAM, CPU step/run loop
+- 152 tests passing (was 145, now 152 after post-review fixes)
 
 ## Decisions
 - Instruction is a frozen dataclass with opcode, rd, rs1, rs2, imm, funct3, funct7
@@ -14,11 +18,14 @@ Phase 1 — COMPLETE. All 11 deliverables implemented. 145 tests passing.
 - Execute dispatches on opcode, then funct3/funct7 within each group
 - ECALL/EBREAK set cpu.halted = True
 
+## Phase 2 Decisions
+- ELF parser hand-rolled with struct.unpack (no pyelftools)
+- M extension: funct7==1 check in _exec_r_type, dispatch to _exec_m_ext
+- CSR shim: minimal, tohost (0x51E) stored on CPU, others return 0/discard
+- Toolchain: riscv64-unknown-elf-gcc with -march=rv32im -mabi=ilp32
+
 ## Blockers
 None.
 
 ## Recent changes
-- Implemented all RV32I: decode, execute, registers, RAM, CPU step/run loop
-- 145 tests covering all 41 instructions, edge cases, Fibonacci integration
-- CLI supports `uv run python -m riscv_npu run <binary>`
-- Had to `uv pip install -e .` to fix import issues (uv sync wasn't sufficient)
+- Expanded Phase 2 spec with 7 deliverables, implementation details, test requirements
