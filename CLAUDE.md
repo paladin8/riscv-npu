@@ -19,8 +19,8 @@ RISC-V (RV32IM) emulator in Python with custom NPU instructions for neural netwo
 
 ## Session end
 1. uv run pytest — confirm passing
-2. Commit working changes (atomic, descriptive messages)
-3. Update .ai/memory.md: what you did, what works, what's blocked
+2. Update .ai/memory.md: what you did, what works, what's blocked
+3. Commit working changes including .ai/memory.md (atomic, descriptive messages)
 
 ## Architecture
 - src/riscv_npu/cpu/      — decode + execute (the core loop)
@@ -51,6 +51,7 @@ RISC-V (RV32IM) emulator in Python with custom NPU instructions for neural netwo
 - main is always passing
 - Branch per phase: phase1-rv32i, phase2-elf, etc.
 - Atomic commits after each working milestone
+- Always include .ai/memory.md updates in the same commit as the code changes they describe — never as a separate commit
 - Descriptive messages: "Implement R-type arithmetic (ADD, SUB, SLL...)" not "update file"
 
 ## 32-bit masking (critical)
