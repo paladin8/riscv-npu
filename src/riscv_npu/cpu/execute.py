@@ -337,12 +337,20 @@ def _exec_system(inst: Instruction, cpu: CPU, pc: int) -> int:
 
 
 def _exec_ecall(cpu: CPU, pc: int) -> int:
-    """Handle ECALL: trap to machine mode via mtvec.
+    """Handle ECALL: try syscall handler, then trap to mtvec, then halt.
 
-    If mtvec is configured (non-zero), triggers a trap by setting mcause
-    and mepc, then jumping to the trap vector. Otherwise, halts the CPU
-    (simple mode for non-compliance programs).
+    Priority order:
+    1. If a syscall_handler is installed, try it first. If it handles
+       the syscall (returns True), advance PC by 4 (no trap).
+    2. If mtvec is configured (non-zero), trigger a machine-mode trap.
+    3. Otherwise, halt the CPU (simple mode).
     """
+    # Try syscall handler first
+    if cpu.syscall_handler is not None:
+        if cpu.syscall_handler.handle(cpu):
+            return (pc + 4) & 0xFFFFFFFF
+
+    # Fall through to trap/halt
     mtvec = cpu.csr_read(_CSR_MTVEC)
     if mtvec != 0:
         # Trap: set cause and return address, jump to trap vector

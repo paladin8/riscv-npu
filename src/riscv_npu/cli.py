@@ -4,8 +4,11 @@ import argparse
 import sys
 
 from .cpu.cpu import CPU
+from .devices.uart import UART, UART_BASE, UART_SIZE
 from .loader.elf import load_elf
+from .memory.bus import MemoryBus
 from .memory.ram import RAM
+from .syscall.handler import SyscallHandler
 
 BASE = 0x80000000
 RAM_SIZE = 1024 * 1024  # 1 MB
@@ -39,8 +42,15 @@ def run_binary(path: str) -> None:
     their virtual addresses, sets PC to the entry point, and sets SP
     to the top of RAM. For raw binaries, loads at 0x80000000.
     """
+    bus = MemoryBus()
     ram = RAM(BASE, RAM_SIZE)
-    cpu = CPU(ram)
+    uart = UART()
+    bus.register(BASE, RAM_SIZE, ram)
+    bus.register(UART_BASE, UART_SIZE, uart)
+
+    cpu = CPU(bus)
+    handler = SyscallHandler()
+    cpu.syscall_handler = handler
 
     # Peek at the first 4 bytes to detect ELF
     with open(path, "rb") as f:
@@ -59,6 +69,8 @@ def run_binary(path: str) -> None:
 
     cpu.run()
 
-    print(f"Halted after {cpu.cycle_count} cycles.")
-    print(f"  x10 (a0) = {cpu.registers.read(10)}")
-    print(f"  x11 (a1) = {cpu.registers.read(11)}")
+    print(f"Halted after {cpu.cycle_count} cycles.", file=sys.stderr)
+    print(f"  x10 (a0) = {cpu.registers.read(10)}", file=sys.stderr)
+    print(f"  x11 (a1) = {cpu.registers.read(11)}", file=sys.stderr)
+
+    sys.exit(cpu.exit_code)

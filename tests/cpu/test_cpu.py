@@ -1,8 +1,11 @@
 """Tests for CPU fetch-decode-execute loop."""
 
+import io
+
 from riscv_npu.cpu.cpu import CPU
 from riscv_npu.memory.bus import MemoryBus
 from riscv_npu.memory.ram import RAM
+from riscv_npu.syscall.handler import SYS_WRITE, SyscallHandler
 
 BASE = 0x80000000
 
@@ -145,3 +148,54 @@ class TestFibonacci:
         assert cpu.registers.read(10) == 55
         # 4 setup + 10*(1 BEQ + 4 body + 1 JAL) + 1 final BEQ + 1 ECALL = 4 + 60 + 2 = 66
         assert cpu.cycle_count == 66
+
+
+class TestCPUSyscall:
+    """Tests for CPU integration with SyscallHandler."""
+
+    def test_ecall_with_handler_write(self) -> None:
+        """ECALL with a syscall handler for write does not trap or halt."""
+        cpu = _make_cpu()
+        stdout = io.BytesIO()
+        handler = SyscallHandler(stdout=stdout)
+        cpu.syscall_handler = handler
+
+        # Store "OK" at BASE+0x100
+        cpu.memory.write8(BASE + 0x100, ord("O"))
+        cpu.memory.write8(BASE + 0x101, ord("K"))
+
+        # Program: set up write syscall args, then ECALL, then EBREAK
+        _write_program(cpu, [
+            _i(SYS_WRITE, 0, 0b000, 17),            # ADDI a7, x0, 64
+            _i(1, 0, 0b000, 10),                      # ADDI a0, x0, 1 (fd=stdout)
+            # Load buf_addr into a1 -- need LUI + ADDI for 0x80000100
+            # LUI a1, 0x80000 (upper 20 bits)
+            0x80000000 | (0x80000 << 12) | (11 << 7) | 0x37,  # LUI x11, 0x80000
+            _i(0x100, 11, 0b000, 11),                 # ADDI a1, a1, 0x100
+            _i(2, 0, 0b000, 12),                      # ADDI a2, x0, 2 (len=2)
+            _i(0, 0, 0b000, 0, OP_SYSTEM),            # ECALL
+            _i(1, 0, 0b000, 0, OP_SYSTEM),            # EBREAK (halt)
+        ])
+        cpu.run()
+
+        assert cpu.halted is True
+        assert stdout.getvalue() == b"OK"
+        # ECALL was handled by syscall handler (no trap), so we continue to EBREAK
+        assert cpu.cycle_count == 7
+
+    def test_ecall_with_handler_unknown_falls_through(self) -> None:
+        """Unknown syscall falls through to halt (no mtvec configured)."""
+        cpu = _make_cpu()
+        handler = SyscallHandler()
+        cpu.syscall_handler = handler
+
+        # Set a7 to unknown syscall number, then ECALL
+        _write_program(cpu, [
+            _i(999 & 0xFFF, 0, 0b000, 17),           # ADDI a7, x0, 999
+            _i(0, 0, 0b000, 0, OP_SYSTEM),            # ECALL
+        ])
+        cpu.run()
+
+        # Should halt via the "no mtvec" path since handler returned False
+        assert cpu.halted is True
+        assert cpu.cycle_count == 2
