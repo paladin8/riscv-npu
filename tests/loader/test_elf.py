@@ -1,7 +1,6 @@
 """Tests for ELF loader."""
 
 import struct
-import tempfile
 
 import pytest
 

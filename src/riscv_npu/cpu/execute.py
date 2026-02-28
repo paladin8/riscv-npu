@@ -155,9 +155,11 @@ def _exec_m_ext(
             if s1 == -0x80000000 and s2 == -1:
                 result = 0x80000000
             else:
-                # Python division rounds toward negative infinity; we need
-                # truncation toward zero, so use int(a/b) trick
-                q = int(s1 / s2)
+                # Python // rounds toward negative infinity; RISC-V needs
+                # truncation toward zero, so use abs division + sign fix
+                q = abs(s1) // abs(s2)
+                if (s1 < 0) != (s2 < 0):
+                    q = -q
                 result = q & 0xFFFFFFFF
 
     elif f3 == 0b101:  # DIVU: unsigned division
@@ -178,7 +180,9 @@ def _exec_m_ext(
             else:
                 # Python % has sign of divisor; RISC-V rem has sign of dividend
                 # Use: rem = dividend - (truncated_quotient * divisor)
-                q = int(s1 / s2)
+                q = abs(s1) // abs(s2)
+                if (s1 < 0) != (s2 < 0):
+                    q = -q
                 rem = s1 - q * s2
                 result = rem & 0xFFFFFFFF
 
@@ -303,8 +307,7 @@ def _exec_branch(inst: Instruction, regs: RegisterFile, pc: int) -> int:
 _IMM_MRET = 0x302
 # ECALL cause codes
 _CAUSE_MACHINE_ECALL = 11
-_CAUSE_USER_ECALL = 8
-# CSR addresses used by trap handling
+# CSR addresses used by trap handling (imported from cpu module constants)
 _CSR_MTVEC = 0x305
 _CSR_MEPC = 0x341
 _CSR_MCAUSE = 0x342

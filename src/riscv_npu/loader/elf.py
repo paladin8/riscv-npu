@@ -212,7 +212,10 @@ def find_symbol(data: bytes, name: str) -> int | None:
                 continue
 
             # Find null terminator
-            str_end = data.index(b"\x00", str_start)
+            try:
+                str_end = data.index(b"\x00", str_start)
+            except ValueError:
+                continue
             sym_name = data[str_start:str_end].decode("ascii", errors="replace")
 
             if sym_name == name:
