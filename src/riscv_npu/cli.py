@@ -37,9 +37,8 @@ def run_binary(path: str) -> None:
     with open(path, "rb") as f:
         data = f.read()
 
-    # Load binary into RAM
-    for i, byte in enumerate(data):
-        ram.write8(BASE + i, byte)
+    # Load binary into RAM (bulk copy)
+    ram._data[0:len(data)] = data
 
     cpu = CPU(ram)
     cpu.pc = BASE

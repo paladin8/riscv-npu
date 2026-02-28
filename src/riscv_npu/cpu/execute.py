@@ -21,6 +21,9 @@ from .decode import (
     OP_FENCE,
 )
 
+from .registers import RegisterFile
+from ..memory.ram import RAM
+
 if TYPE_CHECKING:
     from .cpu import CPU
 
@@ -77,7 +80,7 @@ def execute(inst: Instruction, cpu: CPU) -> int:
         raise ValueError(f"Unimplemented opcode: 0x{inst.opcode:02X}")
 
 
-def _exec_r_type(inst: Instruction, regs: object, pc: int) -> int:
+def _exec_r_type(inst: Instruction, regs: RegisterFile, pc: int) -> int:
     """Execute R-type instructions (opcode 0x33)."""
     rs1 = regs.read(inst.rs1)
     rs2 = regs.read(inst.rs2)
@@ -117,7 +120,7 @@ def _exec_r_type(inst: Instruction, regs: object, pc: int) -> int:
     return pc + 4
 
 
-def _exec_i_arith(inst: Instruction, regs: object, pc: int) -> int:
+def _exec_i_arith(inst: Instruction, regs: RegisterFile, pc: int) -> int:
     """Execute I-type arithmetic instructions (opcode 0x13)."""
     rs1 = regs.read(inst.rs1)
     imm = inst.imm
@@ -155,7 +158,7 @@ def _exec_i_arith(inst: Instruction, regs: object, pc: int) -> int:
     return pc + 4
 
 
-def _exec_load(inst: Instruction, regs: object, mem: object, pc: int) -> int:
+def _exec_load(inst: Instruction, regs: RegisterFile, mem: RAM, pc: int) -> int:
     """Execute load instructions (opcode 0x03)."""
     addr = (regs.read(inst.rs1) + to_signed(inst.imm)) & 0xFFFFFFFF
     f3 = inst.funct3
@@ -177,7 +180,7 @@ def _exec_load(inst: Instruction, regs: object, mem: object, pc: int) -> int:
     return pc + 4
 
 
-def _exec_store(inst: Instruction, regs: object, mem: object, pc: int) -> int:
+def _exec_store(inst: Instruction, regs: RegisterFile, mem: RAM, pc: int) -> int:
     """Execute store instructions (opcode 0x23)."""
     addr = (regs.read(inst.rs1) + to_signed(inst.imm)) & 0xFFFFFFFF
     rs2_val = regs.read(inst.rs2)
@@ -195,7 +198,7 @@ def _exec_store(inst: Instruction, regs: object, mem: object, pc: int) -> int:
     return pc + 4
 
 
-def _exec_branch(inst: Instruction, regs: object, pc: int) -> int:
+def _exec_branch(inst: Instruction, regs: RegisterFile, pc: int) -> int:
     """Execute branch instructions (opcode 0x63)."""
     rs1 = regs.read(inst.rs1)
     rs2 = regs.read(inst.rs2)

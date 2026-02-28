@@ -260,6 +260,12 @@ class TestADDI:
         exec_instruction(cpu, _i((-3) & 0xFFF, 1, 0b000, 2))  # ADDI x2, x1, -3
         assert cpu.registers.read(2) == 7
 
+    def test_overflow(self, exec_instruction, make_cpu, set_regs) -> None:
+        cpu = make_cpu()
+        set_regs(cpu, x1=0xFFFFFFFF)
+        exec_instruction(cpu, _i(1, 1, 0b000, 2))  # ADDI x2, x1, 1
+        assert cpu.registers.read(2) == 0
+
     def test_nop(self, exec_instruction, make_cpu) -> None:
         """NOP = ADDI x0, x0, 0"""
         cpu = make_cpu()
@@ -348,6 +354,18 @@ class TestSRLI:
         exec_instruction(cpu, _i(4, 1, 0b101, 2))  # SRLI x2, x1, 4
         assert cpu.registers.read(2) == 0x08000000
 
+    def test_by_zero(self, exec_instruction, make_cpu, set_regs) -> None:
+        cpu = make_cpu()
+        set_regs(cpu, x1=0xDEADBEEF)
+        exec_instruction(cpu, _i(0, 1, 0b101, 2))
+        assert cpu.registers.read(2) == 0xDEADBEEF
+
+    def test_by_31(self, exec_instruction, make_cpu, set_regs) -> None:
+        cpu = make_cpu()
+        set_regs(cpu, x1=0x80000000)
+        exec_instruction(cpu, _i(31, 1, 0b101, 2))
+        assert cpu.registers.read(2) == 1
+
 
 class TestSRAI:
     def test_negative(self, exec_instruction, make_cpu, set_regs) -> None:
@@ -355,6 +373,18 @@ class TestSRAI:
         set_regs(cpu, x1=0x80000000)
         exec_instruction(cpu, _i(0x400 | 4, 1, 0b101, 2))  # SRAI x2, x1, 4 (funct7 bit set)
         assert cpu.registers.read(2) == 0xF8000000
+
+    def test_by_zero(self, exec_instruction, make_cpu, set_regs) -> None:
+        cpu = make_cpu()
+        set_regs(cpu, x1=0x80000000)
+        exec_instruction(cpu, _i(0x400, 1, 0b101, 2))  # SRAI x2, x1, 0
+        assert cpu.registers.read(2) == 0x80000000
+
+    def test_by_31(self, exec_instruction, make_cpu, set_regs) -> None:
+        cpu = make_cpu()
+        set_regs(cpu, x1=0x80000000)
+        exec_instruction(cpu, _i(0x400 | 31, 1, 0b101, 2))  # SRAI x2, x1, 31
+        assert cpu.registers.read(2) == 0xFFFFFFFF
 
 
 # ==================== Load/Store tests ====================
@@ -454,6 +484,13 @@ class TestStores:
         set_regs(cpu, x1=BASE + 0x100, x2=0x12345678)
         exec_instruction(cpu, _s(0, 2, 1, 0b001))
         assert cpu.memory.read16(BASE + 0x100) == 0x5678
+
+    def test_sw_negative_offset(self, exec_instruction, make_cpu, set_regs) -> None:
+        """Store with negative immediate offset."""
+        cpu = make_cpu()
+        set_regs(cpu, x1=BASE + 0x104, x2=0xCAFEBABE)
+        exec_instruction(cpu, _s((-4) & 0xFFF, 2, 1, 0b010))  # SW x2, -4(x1)
+        assert cpu.memory.read32(BASE + 0x100) == 0xCAFEBABE
 
     def test_store_load_roundtrip(self, exec_instruction, make_cpu, set_regs) -> None:
         """Store then load at each width."""
@@ -647,6 +684,12 @@ class TestJALR:
         cpu = make_cpu()
         set_regs(cpu, x1=BASE + 0x200)
         exec_instruction(cpu, _i(8, 1, 0b000, 2, OP_JALR))
+        assert cpu.pc == BASE + 0x208
+
+    def test_negative_offset(self, exec_instruction, make_cpu, set_regs) -> None:
+        cpu = make_cpu()
+        set_regs(cpu, x1=BASE + 0x210)
+        exec_instruction(cpu, _i((-8) & 0xFFF, 1, 0b000, 2, OP_JALR))
         assert cpu.pc == BASE + 0x208
 
     def test_clears_lsb(self, exec_instruction, make_cpu, set_regs) -> None:

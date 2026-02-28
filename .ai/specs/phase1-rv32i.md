@@ -202,9 +202,11 @@ The `decode(word: int) -> Instruction` function:
 **Files**: `src/riscv_npu/cpu/execute.py`
 
 ```python
-def execute(inst: Instruction, regs: RegisterFile, memory: RAM, pc: int) -> int:
+def execute(inst: Instruction, cpu: CPU) -> int:
     """Execute an instruction. Returns next PC."""
 ```
+
+The `execute` function receives the full `CPU` reference, from which it accesses `cpu.registers`, `cpu.memory`, and `cpu.pc`. This also allows ECALL/EBREAK to set `cpu.halted = True` directly.
 
 R-type (opcode 0x33) dispatch on funct3/funct7:
 - ADD: `(rs1_val + rs2_val) & 0xFFFFFFFF`
@@ -278,7 +280,7 @@ Signed comparisons (BLT, BGE) use `to_signed()`. Unsigned comparisons (BLTU, BGE
 - EBREAK (opcode 0x73, imm=1): set `halted` flag, return `pc + 4`
 - FENCE (opcode 0x0F): no-op, return `pc + 4`
 
-For ECALL/EBREAK: execute needs a way to signal halt. Add a `halt: bool` return or use a `CPUState` container. Simplest: return a sentinel next_pc value (e.g., -1) and have the CPU check for it, OR pass a mutable state object. Decision: pass a simple list `halt_flag: list[bool]` that execute can set to `[True]`.
+For ECALL/EBREAK: execute receives the `CPU` reference and sets `cpu.halted = True` directly.
 
 **Tests**: `tests/cpu/test_execute.py` — LUI loads upper 20 bits. AUIPC adds to PC. JAL/JALR save return address and jump. JALR zeros LSB. ECALL/EBREAK signal halt. FENCE is a no-op.
 
@@ -298,8 +300,7 @@ class CPU:
     def step(self) -> None:
         word = self.memory.read32(self.pc)
         inst = decode(word)
-        next_pc = execute(inst, self.registers, self.memory, self.pc, self)
-        self.pc = next_pc
+        self.pc = execute(inst, self)
         self.cycle_count += 1
 
     def run(self, max_cycles: int = 1_000_000) -> None:
@@ -307,7 +308,7 @@ class CPU:
             self.step()
 ```
 
-Refine execute to accept `cpu` reference for halt signaling instead of the halt_flag list (cleaner). execute sets `cpu.halted = True` for ECALL/EBREAK.
+The `execute(inst, cpu)` function receives the CPU reference for halt signaling. ECALL/EBREAK set `cpu.halted = True`.
 
 **Test fixtures** in `tests/cpu/conftest.py`:
 - `make_cpu()` → creates RAM(0x80000000, 1MB), CPU with PC at 0x80000000

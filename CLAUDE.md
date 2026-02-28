@@ -49,7 +49,7 @@ RISC-V (RV32IM) emulator in Python with custom NPU instructions for neural netwo
 
 ## Git rules
 - main is always passing
-- Branch per phase: phase1-rv32i, phase2-elf, etc.
+- No branches, commit directly to main
 - Atomic commits after each working milestone
 - Always include .ai/memory.md updates in the same commit as the code changes they describe — never as a separate commit
 - Descriptive messages: "Implement R-type arithmetic (ADD, SUB, SLL...)" not "update file"
