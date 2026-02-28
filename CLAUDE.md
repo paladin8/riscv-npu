@@ -17,10 +17,15 @@ RISC-V (RV32IM) emulator in Python with custom NPU instructions for neural netwo
 2. Read .ai/memory.md
 3. Read the active phase spec in .ai/specs/
 
+## Specs
+- .ai/specs/        — active phase specs (current and upcoming work)
+- .ai/completed/    — finished phase specs (reference only)
+
 ## Session end
 1. uv run pytest — confirm passing
 2. Update .ai/memory.md: what you did, what works, what's blocked
-3. Commit working changes including .ai/memory.md (atomic, descriptive messages)
+3. Compact .ai/memory.md: drop stale details, keep only what future sessions need (status, patterns, blockers). Aim for <30 lines.
+4. Commit working changes including .ai/memory.md (atomic, descriptive messages)
 
 ## Architecture
 - src/riscv_npu/cpu/      — decode + execute (the core loop)
