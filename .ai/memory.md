@@ -33,4 +33,7 @@ None.
 - Implemented RAM.load_segment() and load_elf() with 8 more tests
 - Implemented M extension (8 instructions) with 32 tests covering all edge cases
 - Implemented CSR shim (CSRRW/CSRRS/CSRRC + I variants, tohost) with 10 tests
+- Updated CLI to detect ELF files, set PC=entry, SP=0x80FFFFF0
+- Created firmware scaffolding: common/ (start.s, linker.ld, Makefile), fibonacci/ (main.c, Makefile)
+- fibonacci.elf compiles and runs correctly: fib(10) = 55
 - 215 tests passing total

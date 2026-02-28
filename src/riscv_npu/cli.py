@@ -4,10 +4,12 @@ import argparse
 import sys
 
 from .cpu.cpu import CPU
+from .loader.elf import load_elf
 from .memory.ram import RAM
 
 BASE = 0x80000000
 RAM_SIZE = 1024 * 1024  # 1 MB
+STACK_TOP = 0x80FFFFF0  # Top of RAM, 16-byte aligned
 
 
 def main() -> None:
@@ -15,8 +17,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="RISC-V NPU Emulator")
     sub = parser.add_subparsers(dest="command")
 
-    run_parser = sub.add_parser("run", help="Run a raw binary")
-    run_parser.add_argument("binary", help="Path to raw binary file")
+    run_parser = sub.add_parser("run", help="Run a binary or ELF file")
+    run_parser.add_argument("binary", help="Path to binary or ELF file")
 
     # Placeholder for future 'debug' command
     sub.add_parser("debug", help="Run with TUI debugger (not yet implemented)")
@@ -31,17 +33,30 @@ def main() -> None:
 
 
 def run_binary(path: str) -> None:
-    """Load a raw binary at 0x80000000 and run until halt or 1M cycles."""
+    """Load a binary or ELF file and run until halt or 1M cycles.
+
+    Detects ELF files by magic bytes. For ELF files, loads segments to
+    their virtual addresses, sets PC to the entry point, and sets SP
+    to the top of RAM. For raw binaries, loads at 0x80000000.
+    """
     ram = RAM(BASE, RAM_SIZE)
-
-    with open(path, "rb") as f:
-        data = f.read()
-
-    # Load binary into RAM (bulk copy)
-    ram._data[0:len(data)] = data
-
     cpu = CPU(ram)
-    cpu.pc = BASE
+
+    # Peek at the first 4 bytes to detect ELF
+    with open(path, "rb") as f:
+        magic = f.read(4)
+
+    if magic == b"\x7fELF":
+        entry = load_elf(path, ram)
+        cpu.pc = entry
+        cpu.registers.write(2, STACK_TOP)  # SP = x2
+    else:
+        # Raw binary: load at base address
+        with open(path, "rb") as f:
+            data = f.read()
+        ram.load_segment(BASE, data)
+        cpu.pc = BASE
+
     cpu.run()
 
     print(f"Halted after {cpu.cycle_count} cycles.")
