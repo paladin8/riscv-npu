@@ -3,6 +3,7 @@
 import pytest
 
 from riscv_npu.cpu.cpu import CPU
+from riscv_npu.memory.bus import MemoryBus
 from riscv_npu.memory.ram import RAM
 
 BASE = 0x80000000
@@ -13,8 +14,10 @@ RAM_SIZE = 1024 * 1024  # 1 MB
 def make_cpu():
     """Factory fixture: returns a function that creates a fresh CPU."""
     def _make() -> CPU:
+        bus = MemoryBus()
         ram = RAM(BASE, RAM_SIZE)
-        cpu = CPU(ram)
+        bus.register(BASE, RAM_SIZE, ram)
+        cpu = CPU(bus)
         cpu.pc = BASE
         return cpu
     return _make

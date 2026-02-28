@@ -14,6 +14,7 @@ import pytest
 
 from riscv_npu.cpu.cpu import CPU
 from riscv_npu.loader.elf import find_symbol, parse_elf
+from riscv_npu.memory.bus import MemoryBus
 from riscv_npu.memory.ram import RAM
 
 FIXTURES = pathlib.Path(__file__).parent.parent / "fixtures" / "riscv-tests"
@@ -27,12 +28,14 @@ def _run_riscv_test(elf_path: pathlib.Path) -> None:
     prog = parse_elf(data)
     tohost_addr = find_symbol(data, "tohost") or 0
 
+    bus = MemoryBus()
     ram = RAM(BASE, RAM_SIZE)
+    bus.register(BASE, RAM_SIZE, ram)
     for seg in prog.segments:
         padded = seg.data + b"\x00" * (seg.memsz - len(seg.data))
         ram.load_segment(seg.vaddr, padded)
 
-    cpu = CPU(ram)
+    cpu = CPU(bus)
     cpu.pc = prog.entry
     cpu.tohost_addr = tohost_addr
     cpu.run(max_cycles=200_000)

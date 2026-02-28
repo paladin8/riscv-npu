@@ -1,6 +1,6 @@
 """CPU core: fetch-decode-execute loop."""
 
-from ..memory.ram import RAM
+from ..memory.bus import MemoryBus
 from .decode import decode
 from .execute import execute
 from .registers import RegisterFile
@@ -23,7 +23,7 @@ CSR_TOHOST = 0x51E
 class CPU:
     """RISC-V CPU: fetch-decode-execute loop over a register file and memory."""
 
-    def __init__(self, memory: RAM) -> None:
+    def __init__(self, memory: MemoryBus) -> None:
         self.pc: int = 0
         self.registers = RegisterFile()
         self.memory = memory

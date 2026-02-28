@@ -1,6 +1,7 @@
 """Tests for CPU fetch-decode-execute loop."""
 
 from riscv_npu.cpu.cpu import CPU
+from riscv_npu.memory.bus import MemoryBus
 from riscv_npu.memory.ram import RAM
 
 BASE = 0x80000000
@@ -31,8 +32,10 @@ def _j(imm21: int, rd: int) -> int:
 
 
 def _make_cpu() -> CPU:
+    bus = MemoryBus()
     ram = RAM(BASE, 1024 * 1024)
-    cpu = CPU(ram)
+    bus.register(BASE, 1024 * 1024, ram)
+    cpu = CPU(bus)
     cpu.pc = BASE
     return cpu
 
