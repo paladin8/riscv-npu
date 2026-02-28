@@ -28,9 +28,11 @@ class CPU:
         self.registers = RegisterFile()
         self.memory = memory
         self.halted: bool = False
+        self.exit_code: int = 0
         self.cycle_count: int = 0
         self.tohost: int = 0
         self.tohost_addr: int = 0  # Memory-mapped tohost address (set by test runner)
+        self.syscall_handler: object | None = None  # Set to SyscallHandler instance
         self.csrs: dict[int, int] = {
             CSR_MHARTID: 0,  # Hart 0
         }
