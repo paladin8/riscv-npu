@@ -1,4 +1,4 @@
-"""Instruction execution: implements all RV32I operations."""
+"""Instruction execution: implements all RV32I and RV32M operations."""
 
 from __future__ import annotations
 
@@ -67,10 +67,15 @@ def execute(inst: Instruction, cpu: CPU) -> int:
         return (rs1_val + to_signed(inst.imm)) & 0xFFFFFFFE
 
     elif inst.opcode == OP_SYSTEM:
-        if inst.imm == 0:  # ECALL
-            cpu.halted = True
-        elif inst.imm == 1:  # EBREAK
-            cpu.halted = True
+        if inst.funct3 == 0:
+            # ECALL / EBREAK (funct3 == 0, distinguished by imm)
+            if inst.imm == 0:  # ECALL
+                cpu.halted = True
+            elif inst.imm == 1:  # EBREAK
+                cpu.halted = True
+        else:
+            # CSR instructions (funct3 != 0)
+            _exec_csr(inst, cpu)
         return pc + 4
 
     elif inst.opcode == OP_FENCE:
@@ -81,11 +86,15 @@ def execute(inst: Instruction, cpu: CPU) -> int:
 
 
 def _exec_r_type(inst: Instruction, regs: RegisterFile, pc: int) -> int:
-    """Execute R-type instructions (opcode 0x33)."""
+    """Execute R-type instructions (opcode 0x33), including M extension."""
     rs1 = regs.read(inst.rs1)
     rs2 = regs.read(inst.rs2)
     f3 = inst.funct3
     f7 = inst.funct7
+
+    # M extension: funct7 == 0b0000001
+    if f7 == 0b0000001:
+        return _exec_m_ext(inst, regs, pc, rs1, rs2)
 
     if f3 == 0b000:
         if f7 == 0b0000000:  # ADD
@@ -115,6 +124,81 @@ def _exec_r_type(inst: Instruction, regs: RegisterFile, pc: int) -> int:
         result = rs1 & rs2
     else:
         raise ValueError(f"Unknown R-type funct3: {f3:#05b}")
+
+    regs.write(inst.rd, result)
+    return pc + 4
+
+
+def _exec_m_ext(
+    inst: Instruction, regs: RegisterFile, pc: int, rs1: int, rs2: int
+) -> int:
+    """Execute M extension instructions (MUL/MULH/MULHSU/MULHU/DIV/DIVU/REM/REMU).
+
+    All M instructions use opcode 0x33 with funct7=0b0000001.
+    rs1 and rs2 are unsigned 32-bit register values.
+    """
+    f3 = inst.funct3
+
+    if f3 == 0b000:  # MUL: lower 32 bits of rs1 * rs2
+        result = (rs1 * rs2) & 0xFFFFFFFF
+
+    elif f3 == 0b001:  # MULH: upper 32 bits of signed * signed
+        s1 = to_signed(rs1)
+        s2 = to_signed(rs2)
+        result = ((s1 * s2) >> 32) & 0xFFFFFFFF
+
+    elif f3 == 0b010:  # MULHSU: upper 32 bits of signed * unsigned
+        s1 = to_signed(rs1)
+        result = ((s1 * rs2) >> 32) & 0xFFFFFFFF
+
+    elif f3 == 0b011:  # MULHU: upper 32 bits of unsigned * unsigned
+        result = ((rs1 * rs2) >> 32) & 0xFFFFFFFF
+
+    elif f3 == 0b100:  # DIV: signed division, round toward zero
+        if rs2 == 0:
+            result = 0xFFFFFFFF
+        else:
+            s1 = to_signed(rs1)
+            s2 = to_signed(rs2)
+            # Overflow: INT_MIN / -1
+            if s1 == -0x80000000 and s2 == -1:
+                result = 0x80000000
+            else:
+                # Python division rounds toward negative infinity; we need
+                # truncation toward zero, so use int(a/b) trick
+                q = int(s1 / s2)
+                result = q & 0xFFFFFFFF
+
+    elif f3 == 0b101:  # DIVU: unsigned division
+        if rs2 == 0:
+            result = 0xFFFFFFFF
+        else:
+            result = (rs1 // rs2) & 0xFFFFFFFF
+
+    elif f3 == 0b110:  # REM: signed remainder
+        if rs2 == 0:
+            result = rs1
+        else:
+            s1 = to_signed(rs1)
+            s2 = to_signed(rs2)
+            # Overflow: INT_MIN % -1
+            if s1 == -0x80000000 and s2 == -1:
+                result = 0
+            else:
+                # Python % has sign of divisor; RISC-V rem has sign of dividend
+                # Use: rem = dividend - (truncated_quotient * divisor)
+                q = int(s1 / s2)
+                rem = s1 - q * s2
+                result = rem & 0xFFFFFFFF
+
+    elif f3 == 0b111:  # REMU: unsigned remainder
+        if rs2 == 0:
+            result = rs1
+        else:
+            result = (rs1 % rs2) & 0xFFFFFFFF
+
+    else:
+        raise ValueError(f"Unknown M extension funct3: {f3:#05b}")
 
     regs.write(inst.rd, result)
     return pc + 4
@@ -222,3 +306,58 @@ def _exec_branch(inst: Instruction, regs: RegisterFile, pc: int) -> int:
     if taken:
         return (pc + to_signed(inst.imm)) & 0xFFFFFFFF
     return pc + 4
+
+
+# CSR address for riscv-tests tohost signaling
+_CSR_TOHOST = 0x51E
+
+
+def _exec_csr(inst: Instruction, cpu: CPU) -> None:
+    """Execute CSR instructions (minimal shim for riscv-tests compliance).
+
+    Handles CSRRW, CSRRS, CSRRC and their immediate variants.
+    Only CSR 0x51E (tohost) is actually tracked; all other CSRs
+    return 0 on read and discard writes.
+    """
+    regs = cpu.registers
+    f3 = inst.funct3
+    # The CSR address is the raw 12-bit immediate (not sign-extended)
+    csr_addr = inst.imm & 0xFFF
+
+    # Read the current CSR value
+    if csr_addr == _CSR_TOHOST:
+        old_val = cpu.tohost
+    else:
+        old_val = 0
+
+    # Determine the source value and new CSR value
+    if f3 in (0b001, 0b010, 0b011):
+        # CSRRW (001), CSRRS (010), CSRRC (011): source is rs1
+        src = regs.read(inst.rs1)
+    elif f3 in (0b101, 0b110, 0b111):
+        # CSRRWI (101), CSRRSI (110), CSRRCI (111): source is zimm (rs1 field)
+        src = inst.rs1  # 5-bit zero-extended immediate
+    else:
+        return  # Unknown CSR funct3, ignore
+
+    # Compute new CSR value
+    if f3 in (0b001, 0b101):  # CSRRW / CSRRWI
+        new_val = src
+    elif f3 in (0b010, 0b110):  # CSRRS / CSRRSI
+        new_val = old_val | src
+    elif f3 in (0b011, 0b111):  # CSRRC / CSRRCI
+        new_val = old_val & ~src
+    else:
+        new_val = old_val
+
+    new_val = new_val & 0xFFFFFFFF
+
+    # Write old value to rd
+    regs.write(inst.rd, old_val)
+
+    # Write new value to CSR
+    if csr_addr == _CSR_TOHOST:
+        cpu.tohost = new_val
+        if new_val != 0:
+            cpu.halted = True
+    # All other CSRs: writes are silently discarded

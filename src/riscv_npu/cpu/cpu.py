@@ -15,6 +15,7 @@ class CPU:
         self.memory = memory
         self.halted: bool = False
         self.cycle_count: int = 0
+        self.tohost: int = 0
 
     def step(self) -> None:
         """Execute one instruction cycle: fetch, decode, execute."""

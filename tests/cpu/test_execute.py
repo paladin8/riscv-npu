@@ -725,3 +725,342 @@ class TestFENCE:
         exec_instruction(cpu, _i(0, 0, 0b000, 0, OP_FENCE))
         assert cpu.pc == BASE + 4
         assert cpu.halted is False
+
+
+# ==================== M extension tests ====================
+
+# Helper for M extension R-type: funct7=0b0000001
+def _m(rs2: int, rs1: int, funct3: int, rd: int) -> int:
+    return _r(0b0000001, rs2, rs1, funct3, rd)
+
+
+class TestMUL:
+    def test_basic(self, exec_instruction, make_cpu, set_regs) -> None:
+        cpu = make_cpu()
+        set_regs(cpu, x1=6, x2=7)
+        exec_instruction(cpu, _m(2, 1, 0b000, 3))
+        assert cpu.registers.read(3) == 42
+
+    def test_zero(self, exec_instruction, make_cpu, set_regs) -> None:
+        cpu = make_cpu()
+        set_regs(cpu, x1=100, x2=0)
+        exec_instruction(cpu, _m(2, 1, 0b000, 3))
+        assert cpu.registers.read(3) == 0
+
+    def test_overflow_lower_bits(self, exec_instruction, make_cpu, set_regs) -> None:
+        """MUL returns only the lower 32 bits."""
+        cpu = make_cpu()
+        set_regs(cpu, x1=0x80000000, x2=2)
+        exec_instruction(cpu, _m(2, 1, 0b000, 3))
+        assert cpu.registers.read(3) == 0  # 0x100000000 & 0xFFFFFFFF = 0
+
+    def test_negative_times_positive(self, exec_instruction, make_cpu, set_regs) -> None:
+        cpu = make_cpu()
+        set_regs(cpu, x1=0xFFFFFFFF, x2=3)  # -1 * 3 = -3
+        exec_instruction(cpu, _m(2, 1, 0b000, 3))
+        assert cpu.registers.read(3) == 0xFFFFFFFD  # -3 in two's complement
+
+    def test_large_values(self, exec_instruction, make_cpu, set_regs) -> None:
+        cpu = make_cpu()
+        set_regs(cpu, x1=0x10000, x2=0x10000)
+        exec_instruction(cpu, _m(2, 1, 0b000, 3))
+        assert cpu.registers.read(3) == 0  # 0x100000000 & 0xFFFFFFFF = 0
+
+
+class TestMULH:
+    def test_basic(self, exec_instruction, make_cpu, set_regs) -> None:
+        """MULH: upper 32 bits of signed * signed."""
+        cpu = make_cpu()
+        set_regs(cpu, x1=0x10000, x2=0x10000)
+        exec_instruction(cpu, _m(2, 1, 0b001, 3))
+        # 0x10000 * 0x10000 = 0x100000000, upper 32 bits = 1
+        assert cpu.registers.read(3) == 1
+
+    def test_neg_times_neg(self, exec_instruction, make_cpu, set_regs) -> None:
+        cpu = make_cpu()
+        set_regs(cpu, x1=0xFFFFFFFF, x2=0xFFFFFFFF)  # -1 * -1 = 1
+        exec_instruction(cpu, _m(2, 1, 0b001, 3))
+        assert cpu.registers.read(3) == 0  # upper 32 bits of 1 = 0
+
+    def test_neg_times_pos(self, exec_instruction, make_cpu, set_regs) -> None:
+        cpu = make_cpu()
+        set_regs(cpu, x1=0xFFFFFFFF, x2=2)  # -1 * 2 = -2
+        exec_instruction(cpu, _m(2, 1, 0b001, 3))
+        assert cpu.registers.read(3) == 0xFFFFFFFF  # upper 32 of -2 (64-bit)
+
+    def test_zero(self, exec_instruction, make_cpu, set_regs) -> None:
+        cpu = make_cpu()
+        set_regs(cpu, x1=0, x2=0x80000000)
+        exec_instruction(cpu, _m(2, 1, 0b001, 3))
+        assert cpu.registers.read(3) == 0
+
+
+class TestMULHSU:
+    def test_positive_times_unsigned(self, exec_instruction, make_cpu, set_regs) -> None:
+        """MULHSU: signed * unsigned, upper 32 bits."""
+        cpu = make_cpu()
+        set_regs(cpu, x1=0x10000, x2=0x10000)
+        exec_instruction(cpu, _m(2, 1, 0b010, 3))
+        assert cpu.registers.read(3) == 1
+
+    def test_negative_times_unsigned(self, exec_instruction, make_cpu, set_regs) -> None:
+        cpu = make_cpu()
+        set_regs(cpu, x1=0xFFFFFFFF, x2=1)  # -1 (signed) * 1 (unsigned) = -1
+        exec_instruction(cpu, _m(2, 1, 0b010, 3))
+        # -1 * 1 = -1, as 64-bit: 0xFFFFFFFFFFFFFFFF, upper 32 = 0xFFFFFFFF
+        assert cpu.registers.read(3) == 0xFFFFFFFF
+
+    def test_negative_times_large_unsigned(self, exec_instruction, make_cpu, set_regs) -> None:
+        cpu = make_cpu()
+        set_regs(cpu, x1=0xFFFFFFFF, x2=0xFFFFFFFF)  # -1 * 0xFFFFFFFF
+        exec_instruction(cpu, _m(2, 1, 0b010, 3))
+        # -1 * 0xFFFFFFFF = -0xFFFFFFFF = -(2^32 - 1)
+        # As 64-bit: 0xFFFFFFFF00000001, upper 32 = 0xFFFFFFFF
+        assert cpu.registers.read(3) == 0xFFFFFFFF
+
+
+class TestMULHU:
+    def test_basic(self, exec_instruction, make_cpu, set_regs) -> None:
+        """MULHU: upper 32 bits of unsigned * unsigned."""
+        cpu = make_cpu()
+        set_regs(cpu, x1=0x10000, x2=0x10000)
+        exec_instruction(cpu, _m(2, 1, 0b011, 3))
+        assert cpu.registers.read(3) == 1
+
+    def test_max_unsigned(self, exec_instruction, make_cpu, set_regs) -> None:
+        cpu = make_cpu()
+        set_regs(cpu, x1=0xFFFFFFFF, x2=0xFFFFFFFF)
+        exec_instruction(cpu, _m(2, 1, 0b011, 3))
+        # 0xFFFFFFFF * 0xFFFFFFFF = 0xFFFFFFFE00000001, upper 32 = 0xFFFFFFFE
+        assert cpu.registers.read(3) == 0xFFFFFFFE
+
+    def test_zero(self, exec_instruction, make_cpu, set_regs) -> None:
+        cpu = make_cpu()
+        set_regs(cpu, x1=5, x2=0)
+        exec_instruction(cpu, _m(2, 1, 0b011, 3))
+        assert cpu.registers.read(3) == 0
+
+
+class TestDIV:
+    def test_basic(self, exec_instruction, make_cpu, set_regs) -> None:
+        cpu = make_cpu()
+        set_regs(cpu, x1=20, x2=6)
+        exec_instruction(cpu, _m(2, 1, 0b100, 3))
+        assert cpu.registers.read(3) == 3  # 20 / 6 = 3 (truncated)
+
+    def test_negative_dividend(self, exec_instruction, make_cpu, set_regs) -> None:
+        cpu = make_cpu()
+        set_regs(cpu, x1=0xFFFFFFEC, x2=3)  # -20 / 3 = -6 (truncated toward zero)
+        exec_instruction(cpu, _m(2, 1, 0b100, 3))
+        assert cpu.registers.read(3) == 0xFFFFFFFA  # -6 in two's complement
+
+    def test_negative_divisor(self, exec_instruction, make_cpu, set_regs) -> None:
+        cpu = make_cpu()
+        set_regs(cpu, x1=20, x2=0xFFFFFFFD)  # 20 / -3 = -6
+        exec_instruction(cpu, _m(2, 1, 0b100, 3))
+        assert cpu.registers.read(3) == 0xFFFFFFFA  # -6
+
+    def test_both_negative(self, exec_instruction, make_cpu, set_regs) -> None:
+        cpu = make_cpu()
+        set_regs(cpu, x1=0xFFFFFFEC, x2=0xFFFFFFFD)  # -20 / -3 = 6
+        exec_instruction(cpu, _m(2, 1, 0b100, 3))
+        assert cpu.registers.read(3) == 6
+
+    def test_div_by_zero(self, exec_instruction, make_cpu, set_regs) -> None:
+        """DIV by zero returns 0xFFFFFFFF (all ones)."""
+        cpu = make_cpu()
+        set_regs(cpu, x1=42, x2=0)
+        exec_instruction(cpu, _m(2, 1, 0b100, 3))
+        assert cpu.registers.read(3) == 0xFFFFFFFF
+
+    def test_overflow(self, exec_instruction, make_cpu, set_regs) -> None:
+        """Signed overflow: INT_MIN / -1 returns INT_MIN (0x80000000)."""
+        cpu = make_cpu()
+        set_regs(cpu, x1=0x80000000, x2=0xFFFFFFFF)  # -2147483648 / -1
+        exec_instruction(cpu, _m(2, 1, 0b100, 3))
+        assert cpu.registers.read(3) == 0x80000000
+
+
+class TestDIVU:
+    def test_basic(self, exec_instruction, make_cpu, set_regs) -> None:
+        cpu = make_cpu()
+        set_regs(cpu, x1=20, x2=6)
+        exec_instruction(cpu, _m(2, 1, 0b101, 3))
+        assert cpu.registers.read(3) == 3
+
+    def test_large_unsigned(self, exec_instruction, make_cpu, set_regs) -> None:
+        cpu = make_cpu()
+        set_regs(cpu, x1=0xFFFFFFFF, x2=2)  # 4294967295 / 2 = 2147483647
+        exec_instruction(cpu, _m(2, 1, 0b101, 3))
+        assert cpu.registers.read(3) == 0x7FFFFFFF
+
+    def test_div_by_zero(self, exec_instruction, make_cpu, set_regs) -> None:
+        """DIVU by zero returns 0xFFFFFFFF."""
+        cpu = make_cpu()
+        set_regs(cpu, x1=42, x2=0)
+        exec_instruction(cpu, _m(2, 1, 0b101, 3))
+        assert cpu.registers.read(3) == 0xFFFFFFFF
+
+
+class TestREM:
+    def test_basic(self, exec_instruction, make_cpu, set_regs) -> None:
+        cpu = make_cpu()
+        set_regs(cpu, x1=20, x2=6)
+        exec_instruction(cpu, _m(2, 1, 0b110, 3))
+        assert cpu.registers.read(3) == 2  # 20 % 6 = 2
+
+    def test_negative_dividend(self, exec_instruction, make_cpu, set_regs) -> None:
+        """Remainder has sign of dividend."""
+        cpu = make_cpu()
+        set_regs(cpu, x1=0xFFFFFFEC, x2=3)  # -20 % 3 = -2
+        exec_instruction(cpu, _m(2, 1, 0b110, 3))
+        assert cpu.registers.read(3) == 0xFFFFFFFE  # -2
+
+    def test_negative_divisor(self, exec_instruction, make_cpu, set_regs) -> None:
+        cpu = make_cpu()
+        set_regs(cpu, x1=20, x2=0xFFFFFFFD)  # 20 % -3 = 2
+        exec_instruction(cpu, _m(2, 1, 0b110, 3))
+        assert cpu.registers.read(3) == 2
+
+    def test_rem_by_zero(self, exec_instruction, make_cpu, set_regs) -> None:
+        """REM by zero returns the dividend."""
+        cpu = make_cpu()
+        set_regs(cpu, x1=42, x2=0)
+        exec_instruction(cpu, _m(2, 1, 0b110, 3))
+        assert cpu.registers.read(3) == 42
+
+    def test_overflow(self, exec_instruction, make_cpu, set_regs) -> None:
+        """Signed overflow: INT_MIN % -1 returns 0."""
+        cpu = make_cpu()
+        set_regs(cpu, x1=0x80000000, x2=0xFFFFFFFF)  # -2147483648 % -1
+        exec_instruction(cpu, _m(2, 1, 0b110, 3))
+        assert cpu.registers.read(3) == 0
+
+
+class TestREMU:
+    def test_basic(self, exec_instruction, make_cpu, set_regs) -> None:
+        cpu = make_cpu()
+        set_regs(cpu, x1=20, x2=6)
+        exec_instruction(cpu, _m(2, 1, 0b111, 3))
+        assert cpu.registers.read(3) == 2
+
+    def test_large_unsigned(self, exec_instruction, make_cpu, set_regs) -> None:
+        cpu = make_cpu()
+        set_regs(cpu, x1=0xFFFFFFFF, x2=7)  # 4294967295 % 7 = 3
+        exec_instruction(cpu, _m(2, 1, 0b111, 3))
+        # 4294967295 = 613566756 * 7 + 3
+        assert cpu.registers.read(3) == 3
+
+    def test_rem_by_zero(self, exec_instruction, make_cpu, set_regs) -> None:
+        """REMU by zero returns the dividend."""
+        cpu = make_cpu()
+        set_regs(cpu, x1=42, x2=0)
+        exec_instruction(cpu, _m(2, 1, 0b111, 3))
+        assert cpu.registers.read(3) == 42
+
+
+# ==================== CSR shim tests ====================
+
+# CSR instruction encoding: I-type with opcode 0x73
+# CSR address in imm[11:0], source in rs1 (or zimm for I variants)
+def _csr(csr_addr: int, rs1: int, funct3: int, rd: int) -> int:
+    """Encode a CSR instruction."""
+    return ((csr_addr & 0xFFF) << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | OP_SYSTEM
+
+
+CSR_TOHOST = 0x51E
+CSR_MSTATUS = 0x300
+
+
+class TestCSRRW:
+    def test_csrrw_tohost_pass(self, exec_instruction, make_cpu, set_regs) -> None:
+        """CSRRW to tohost=1 sets cpu.tohost and halts."""
+        cpu = make_cpu()
+        set_regs(cpu, x1=1)
+        exec_instruction(cpu, _csr(CSR_TOHOST, 1, 0b001, 0))
+        assert cpu.tohost == 1
+        assert cpu.halted is True
+
+    def test_csrrw_tohost_fail(self, exec_instruction, make_cpu, set_regs) -> None:
+        """CSRRW to tohost with non-1 value also halts (test failure)."""
+        cpu = make_cpu()
+        set_regs(cpu, x1=0x0A)  # Test case 5 failed (0x0A >> 1 = 5)
+        exec_instruction(cpu, _csr(CSR_TOHOST, 1, 0b001, 0))
+        assert cpu.tohost == 0x0A
+        assert cpu.halted is True
+
+    def test_csrrw_reads_old_value(self, exec_instruction, make_cpu, set_regs) -> None:
+        """CSRRW writes old CSR value to rd."""
+        cpu = make_cpu()
+        cpu.tohost = 42
+        set_regs(cpu, x1=99)
+        exec_instruction(cpu, _csr(CSR_TOHOST, 1, 0b001, 3))
+        assert cpu.registers.read(3) == 42
+        assert cpu.tohost == 99
+
+    def test_csrrw_other_csr_discarded(self, exec_instruction, make_cpu, set_regs) -> None:
+        """CSRRW to a non-tohost CSR is silently discarded."""
+        cpu = make_cpu()
+        set_regs(cpu, x1=0xFF)
+        exec_instruction(cpu, _csr(CSR_MSTATUS, 1, 0b001, 3))
+        assert cpu.registers.read(3) == 0  # Unknown CSR reads as 0
+        assert cpu.halted is False  # Did not halt
+
+
+class TestCSRRS:
+    def test_csrrs_reads_zero_for_unknown(self, exec_instruction, make_cpu, set_regs) -> None:
+        """CSRRS on unknown CSR reads 0 into rd."""
+        cpu = make_cpu()
+        set_regs(cpu, x1=0)
+        exec_instruction(cpu, _csr(CSR_MSTATUS, 1, 0b010, 3))
+        assert cpu.registers.read(3) == 0
+
+    def test_csrrs_sets_bits_in_tohost(self, exec_instruction, make_cpu, set_regs) -> None:
+        """CSRRS ORs rs1 into the CSR."""
+        cpu = make_cpu()
+        cpu.tohost = 0x0F
+        set_regs(cpu, x1=0xF0)
+        exec_instruction(cpu, _csr(CSR_TOHOST, 1, 0b010, 3))
+        assert cpu.registers.read(3) == 0x0F  # Old value in rd
+        assert cpu.tohost == 0xFF  # OR'd result
+
+
+class TestCSRRC:
+    def test_csrrc_clears_bits(self, exec_instruction, make_cpu, set_regs) -> None:
+        """CSRRC clears bits in the CSR."""
+        cpu = make_cpu()
+        cpu.tohost = 0xFF
+        set_regs(cpu, x1=0x0F)
+        exec_instruction(cpu, _csr(CSR_TOHOST, 1, 0b011, 3))
+        assert cpu.registers.read(3) == 0xFF  # Old value in rd
+        assert cpu.tohost == 0xF0  # Cleared lower nibble
+
+
+class TestCSRRWI:
+    def test_csrrwi(self, exec_instruction, make_cpu) -> None:
+        """CSRRWI uses rs1 field as 5-bit immediate."""
+        cpu = make_cpu()
+        # zimm = 5 (in rs1 field), write to tohost
+        exec_instruction(cpu, _csr(CSR_TOHOST, 5, 0b101, 3))
+        assert cpu.registers.read(3) == 0  # Old tohost was 0
+        assert cpu.tohost == 5
+
+
+class TestCSRRSI:
+    def test_csrrsi(self, exec_instruction, make_cpu) -> None:
+        """CSRRSI sets bits using zimm."""
+        cpu = make_cpu()
+        cpu.tohost = 0x10
+        exec_instruction(cpu, _csr(CSR_TOHOST, 3, 0b110, 3))  # zimm=3
+        assert cpu.registers.read(3) == 0x10
+        assert cpu.tohost == 0x13  # 0x10 | 3 = 0x13
+
+
+class TestCSRRCI:
+    def test_csrrci(self, exec_instruction, make_cpu) -> None:
+        """CSRRCI clears bits using zimm."""
+        cpu = make_cpu()
+        cpu.tohost = 0xFF
+        exec_instruction(cpu, _csr(CSR_TOHOST, 0x0F, 0b111, 3))  # zimm=15
+        assert cpu.registers.read(3) == 0xFF
+        assert cpu.tohost == 0xF0
