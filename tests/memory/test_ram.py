@@ -78,3 +78,40 @@ class TestRAM:
     def test_initial_values_zero(self) -> None:
         ram = RAM(BASE, SIZE)
         assert ram.read32(BASE) == 0
+
+
+class TestLoadSegment:
+    def test_load_and_readback(self) -> None:
+        """load_segment copies bytes, which can be read back with read8/32."""
+        ram = RAM(BASE, SIZE)
+        data = b"\x01\x02\x03\x04\x05\x06\x07\x08"
+        ram.load_segment(BASE, data)
+        assert ram.read8(BASE) == 0x01
+        assert ram.read8(BASE + 7) == 0x08
+        # Little-endian 32-bit read of first 4 bytes
+        assert ram.read32(BASE) == 0x04030201
+
+    def test_load_at_offset(self) -> None:
+        """load_segment works at an address offset from base."""
+        ram = RAM(BASE, SIZE)
+        data = b"\xAA\xBB\xCC\xDD"
+        ram.load_segment(BASE + 256, data)
+        assert ram.read32(BASE + 256) == 0xDDCCBBAA
+
+    def test_load_bounds_check(self) -> None:
+        """load_segment raises MemoryError if segment exceeds RAM."""
+        ram = RAM(BASE, SIZE)
+        with pytest.raises(MemoryError):
+            ram.load_segment(BASE + SIZE - 3, b"\x00" * 4)
+
+    def test_load_below_base(self) -> None:
+        """load_segment raises MemoryError for address below RAM base."""
+        ram = RAM(BASE, SIZE)
+        with pytest.raises(MemoryError):
+            ram.load_segment(BASE - 1, b"\x00")
+
+    def test_load_empty(self) -> None:
+        """load_segment with empty data is a no-op."""
+        ram = RAM(BASE, SIZE)
+        ram.load_segment(BASE, b"")
+        assert ram.read32(BASE) == 0  # Still zero

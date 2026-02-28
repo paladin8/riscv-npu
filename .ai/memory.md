@@ -29,3 +29,6 @@ None.
 
 ## Recent changes
 - Expanded Phase 2 spec with 7 deliverables, implementation details, test requirements
+- Implemented ELF parser (parse_elf, ElfProgram, ElfSegment) with 13 tests
+- Implemented RAM.load_segment() and load_elf() with 8 more tests
+- 173 tests passing total

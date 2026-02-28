@@ -45,3 +45,16 @@ class RAM:
         """Write a 32-bit word (little-endian)."""
         off = self._offset(addr, 4)
         self._data[off:off + 4] = (value & 0xFFFFFFFF).to_bytes(4, "little")
+
+    def load_segment(self, addr: int, data: bytes) -> None:
+        """Bulk-load bytes into RAM at an absolute address.
+
+        Copies the entire `data` buffer into memory starting at `addr`.
+        Raises MemoryError if the segment extends beyond RAM bounds.
+
+        Args:
+            addr: Absolute start address for the load.
+            data: Raw bytes to copy into memory.
+        """
+        off = self._offset(addr, len(data))
+        self._data[off : off + len(data)] = data
