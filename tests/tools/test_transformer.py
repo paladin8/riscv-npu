@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import math
-
 from riscv_npu.npu.engine import Q16_ONE
-from riscv_npu.npu.transformer import (
+from riscv_npu.tools.transformer import (
     TransformerConfig,
     TransformerWeights,
     LayerWeights,

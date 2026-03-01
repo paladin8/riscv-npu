@@ -119,7 +119,7 @@ def _parse_digit(output: str) -> int:
 
 @pytest.mark.skipif(not _HAS_TOOLCHAIN, reason="riscv64 toolchain not installed")
 @pytest.mark.skipif(not _HAS_ELF, reason="mnist.elf not built (run: cd firmware/mnist && make)")
-@pytest.mark.skipif(not _HAS_TEST_DATA, reason="test_data.py not generated (run: uv run --extra torch python tools/export_weights.py)")
+@pytest.mark.skipif(not _HAS_TEST_DATA, reason="test_data.py not generated (run: uv run --extra torch python -m riscv_npu.tools.export_mnist_weights)")
 class TestMnistInference:
     """Integration tests for MNIST firmware inference."""
 

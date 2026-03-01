@@ -9,10 +9,9 @@ This module is used to validate firmware output in integration tests.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 
-from .engine import Q16_ONE, exp_q16_16, rsqrt_q16_16
+from riscv_npu.npu.engine import Q16_ONE, exp_q16_16, rsqrt_q16_16
 
 
 @dataclass
@@ -208,15 +207,12 @@ def softmax_q(scores: list[int], n: int) -> list[int]:
             max_score = scores[i]
 
     # Step 2: Subtract max and convert to Q16.16
-    # The scores are in int32 accumulator scale. We need to bring them
-    # into a reasonable Q16.16 range for exp. Since attention scores
-    # are typically small integers, we scale by a fixed factor.
-    # For simplicity, treat the raw int32 difference as the Q16.16 input.
+    # Scores are raw int32. exp_q16_16 expects Q16.16 input, so we must
+    # shift left by 16 to convert integer differences to Q16.16 format.
     shifted = []
     for i in range(n):
         diff = scores[i] - max_score  # Always <= 0
-        # Convert to Q16.16 (diff is already in reasonable range)
-        shifted.append(diff & 0xFFFFFFFF)
+        shifted.append((diff << 16) & 0xFFFFFFFF)
 
     # Step 3: Compute exp in Q16.16
     exp_vals = []
@@ -405,7 +401,7 @@ def feedforward_q(
     Returns:
         FFN output, shape (embed_dim,), int8.
     """
-    from .engine import GELU_TABLE
+    from riscv_npu.npu.engine import GELU_TABLE
 
     dim = config.embed_dim
     ff_dim = config.ff_dim

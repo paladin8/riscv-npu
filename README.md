@@ -34,6 +34,8 @@ uv run python -m riscv_npu debug firmware/hello/hello.elf
 
 The debugger displays four panels: registers, disassembly, memory hex dump, and UART output. Changed registers are highlighted after each step.
 
+Use `--write SYMBOL:FILE` to load file contents into memory at an ELF symbol's address before execution. This is useful for injecting test data (e.g. weight files or input images) into firmware buffers.
+
 ### Debugger commands
 
 | Command                  | Description                                     |
@@ -60,14 +62,37 @@ This requires a RISC-V cross-compiler. All firmware is compiled with `-march=rv3
 
 ### Example programs
 
-| Program      | Description                                                      |
-| ------------ | ---------------------------------------------------------------- |
-| `fibonacci`  | Computes fib(10), returns result in `a0`                         |
-| `hello`      | Prints "Hello, World!" via write syscall                         |
-| `uart-hello` | Prints via direct UART register access (memory-mapped I/O)       |
-| `sort`       | Insertion sort, returns 1 on success                             |
-| `npu_test`   | Exercises all NPU instructions (MACC, RELU, QMUL, CLAMP, GELU)   |
-| `mnist`      | Quantized 784->128->10 MLP, classifies handwritten digits       |
+| Program       | Description                                                      |
+| ------------- | ---------------------------------------------------------------- |
+| `fibonacci`   | Computes fib(10), returns result in `a0`                         |
+| `hello`       | Prints "Hello, World!" via write syscall                         |
+| `uart-hello`  | Prints via direct UART register access (memory-mapped I/O)       |
+| `sort`        | Insertion sort, returns 1 on success                             |
+| `npu_test`    | Exercises all NPU instructions (MACC, RELU, QMUL, CLAMP, GELU)   |
+| `mnist`       | Quantized 784->128->10 MLP, classifies handwritten digits        |
+| `transformer` | Tiny char-level transformer LM (2 layers, 4 heads, embed_dim=64) |
+
+### Generating weights
+
+The `mnist` and `transformer` firmware require exported weight files before compiling. These scripts train a model, quantize to int8, and write a `weights.h` C header into the firmware directory.
+
+```bash
+# MNIST MLP weights (~100KB)
+uv run --extra torch python -m riscv_npu.tools.export_mnist_weights
+
+# Transformer weights (~136KB)
+uv run --extra torch python -m riscv_npu.tools.export_transformer_weights
+```
+
+Then compile and run:
+
+```bash
+cd firmware/mnist && make
+uv run python -m riscv_npu run firmware/mnist/mnist.elf
+
+cd firmware/transformer && make
+uv run python -m riscv_npu run firmware/transformer/transformer.elf
+```
 
 ## Testing
 
@@ -87,7 +112,7 @@ src/riscv_npu/
   loader/    — ELF parser
   syscall/   — ecall dispatch
   npu/       — custom NPU instruction execution + compute engine
+  tools/     — weight export, assembler utilities
   tui/       — Rich-based terminal debugger
 firmware/    — C programs that run on the emulator
-tools/       — weight export, assembler utilities
 ```

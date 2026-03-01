@@ -6,7 +6,7 @@ and exports:
   - firmware/mnist/test_data.py: Python module with test images + reference predictions
 
 Usage:
-    uv run --extra torch python tools/export_weights.py
+    uv run --extra torch python -m riscv_npu.tools.export_mnist_weights
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ def train_model(epochs: int = 5, lr: float = 1e-3) -> MnistMLP:
     Returns:
         Trained MnistMLP model in eval mode.
     """
-    data_dir = Path(__file__).parent.parent / "data"
+    data_dir = Path(__file__).parent.parent.parent.parent / "data"
     data_dir.mkdir(exist_ok=True)
 
     transform = transforms.Compose([
@@ -137,7 +137,7 @@ def quantize_weights(model: MnistMLP) -> dict[str, Any]:
         b2_float = model.fc2.bias.data.clone()    # (10,)
 
     # --- Calibration: find activation ranges ---
-    data_dir = Path(__file__).parent.parent / "data"
+    data_dir = Path(__file__).parent.parent.parent.parent / "data"
     transform = transforms.Compose([transforms.ToTensor()])
     calib_set = torchvision.datasets.MNIST(
         root=str(data_dir), train=True, download=False, transform=transform,
@@ -363,7 +363,7 @@ def export_test_data(
         path: Output file path.
         num_images: Number of test images to export.
     """
-    data_dir = Path(__file__).parent.parent / "data"
+    data_dir = Path(__file__).parent.parent.parent.parent / "data"
     transform = transforms.Compose([transforms.ToTensor()])
     test_set = torchvision.datasets.MNIST(
         root=str(data_dir), train=False, download=True, transform=transform,
@@ -432,7 +432,7 @@ def export_test_data(
 
 def main() -> None:
     """Train, quantize, and export MNIST MLP weights."""
-    firmware_dir = Path(__file__).parent.parent / "firmware" / "mnist"
+    firmware_dir = Path(__file__).parent.parent.parent.parent / "firmware" / "mnist"
     firmware_dir.mkdir(parents=True, exist_ok=True)
 
     print("Training MNIST MLP (784 -> 128 -> 10)...")

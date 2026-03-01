@@ -34,9 +34,9 @@ RISC-V (RV32IM) emulator in Python with custom NPU instructions for neural netwo
 - src/riscv_npu/loader/   — ELF parser
 - src/riscv_npu/syscall/  — ecall dispatch
 - src/riscv_npu/npu/      — custom NPU instruction execution + compute engine
+- src/riscv_npu/tools/    — weight export, assembler utilities
 - src/riscv_npu/tui/      — Rich-based terminal debugger
 - firmware/               — C code that runs ON the emulator (cross-compiled)
-- tools/                  — weight export, assembler utilities
 
 ## Conventions
 - Python 3.14+, type hints on all signatures

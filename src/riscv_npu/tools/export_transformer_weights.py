@@ -6,7 +6,7 @@ quantizes weights to int8, and exports:
   - firmware/transformer/test_data.py: Python module with test sequences + expected outputs
 
 Usage:
-    uv run --extra torch python tools/export_transformer_weights.py
+    uv run --extra torch python -m riscv_npu.tools.export_transformer_weights
 """
 
 from __future__ import annotations
@@ -45,6 +45,69 @@ FF_DIM = 4 * EMBED_DIM  # 256
 # Network definition
 # ---------------------------------------------------------------------------
 
+def _fake_quantize_i8(x: torch.Tensor) -> torch.Tensor:
+    """Simulate int8 quantization with straight-through estimator.
+
+    Rounds to int8 grid in the forward pass but passes gradients through.
+    Uses per-tensor symmetric quantization with power-of-2 scales
+    to match the actual export quantization.
+    """
+    x_max = x.detach().abs().max().clamp(min=1e-8)
+    # Power-of-2 scale matching the export
+    shift = torch.floor(torch.log2(127.0 / x_max)).int().item()
+    scale = float(2 ** shift)
+    x_q = torch.clamp(torch.round(x * scale), -128, 127) / scale
+    return x_q
+
+
+class QATLinear(nn.Module):
+    """Linear layer with fake weight quantization for QAT."""
+
+    def __init__(self, in_features: int, out_features: int) -> None:
+        super().__init__()
+        self.linear = nn.Linear(in_features, out_features)
+        self.qat_enabled = False
+
+    @property
+    def weight(self) -> nn.Parameter:
+        """Access underlying weight for quantization export."""
+        return self.linear.weight
+
+    @property
+    def bias(self) -> nn.Parameter:
+        """Access underlying bias for quantization export."""
+        return self.linear.bias
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward with optional fake weight quantization."""
+        if self.qat_enabled:
+            w_q = _fake_quantize_i8(self.linear.weight)
+            return F.linear(x, w_q, self.linear.bias)
+        return self.linear(x)
+
+
+def _fake_quantize_act_i8(x: torch.Tensor) -> torch.Tensor:
+    """Simulate int8 activation quantization (straight-through estimator).
+
+    Uses per-tensor symmetric quantization with power-of-2 scales, matching
+    the implicit scaling in the firmware's shift-and-clamp operations.
+    """
+    x_max = x.detach().abs().max().clamp(min=1e-8)
+    shift = torch.floor(torch.log2(127.0 / x_max)).int().item()
+    scale = float(2 ** shift)
+    x_q = torch.clamp(torch.round(x * scale), -128, 127) / scale
+    return x_q
+
+
+def _fake_quantize_act_u8(x: torch.Tensor) -> torch.Tensor:
+    """Simulate uint8 activation quantization (straight-through estimator).
+
+    Maps [0, 1] softmax probabilities to uint8 [0, 255] and back.
+    """
+    x_q = torch.clamp(torch.round(x * 255), 0, 255) / 255
+    return x_q
+
+
 class RMSNorm(nn.Module):
     """Root Mean Square Layer Normalization."""
 
@@ -59,27 +122,124 @@ class RMSNorm(nn.Module):
         return x * rms * self.weight
 
 
+class MultiHeadAttention(nn.Module):
+    """Multi-head attention with QATLinear projections.
+
+    Replaces nn.MultiheadAttention so that Q/K/V/O projection weights
+    are fake-quantized during QAT training.
+    """
+
+    def __init__(self, dim: int, n_heads: int) -> None:
+        super().__init__()
+        self.dim = dim
+        self.n_heads = n_heads
+        self.head_dim = dim // n_heads
+        self.scale = 1.0 / math.sqrt(self.head_dim)
+
+        self.wq = QATLinear(dim, dim)
+        self.wk = QATLinear(dim, dim)
+        self.wv = QATLinear(dim, dim)
+        self.wo = QATLinear(dim, dim)
+        self.qat_enabled = False
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
+        """Multi-head attention forward pass.
+
+        Args:
+            x: Input tensor (B, T, D).
+            mask: Causal mask — True for positions to ignore (B or 1, T, T).
+
+        Returns:
+            Attention output (B, T, D).
+        """
+        B, T, D = x.shape
+
+        # Project to Q, K, V and fake-quantize activations
+        q = self.wq(x)
+        k = self.wk(x)
+        v = self.wv(x)
+        if self.qat_enabled:
+            q = _fake_quantize_act_i8(q)
+            k = _fake_quantize_act_i8(k)
+            v = _fake_quantize_act_i8(v)
+
+        # Reshape to (B, n_heads, T, head_dim)
+        q = q.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+        k = k.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+        v = v.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+
+        # Attention scores: (B, n_heads, T, T)
+        scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale
+
+        if mask is not None:
+            scores = scores.masked_fill(mask.unsqueeze(0).unsqueeze(0), float("-inf"))
+
+        attn_weights = F.softmax(scores, dim=-1)
+
+        # Simulate uint8 quantization of attention probabilities
+        if self.qat_enabled:
+            attn_weights = _fake_quantize_act_u8(attn_weights)
+
+        # Weighted sum of V
+        out = torch.matmul(attn_weights, v)  # (B, n_heads, T, head_dim)
+        out = out.transpose(1, 2).contiguous().view(B, T, D)
+
+        # Simulate int8 after weighted V sum (firmware clamps to int8)
+        if self.qat_enabled:
+            out = _fake_quantize_act_i8(out)
+
+        # Output projection
+        out = self.wo(out)
+        return out
+
+
 class TransformerBlock(nn.Module):
     """Single transformer block: attention + feedforward."""
 
     def __init__(self, dim: int, n_heads: int, ff_dim: int) -> None:
         super().__init__()
         self.ln1 = RMSNorm(dim)
-        self.attn = nn.MultiheadAttention(dim, n_heads, batch_first=True)
+        self.attn = MultiHeadAttention(dim, n_heads)
         self.ln2 = RMSNorm(dim)
-        self.ff = nn.Sequential(
-            nn.Linear(dim, ff_dim),
-            nn.GELU(),
-            nn.Linear(ff_dim, dim),
-        )
+        self.ff_w1 = QATLinear(dim, ff_dim)
+        self.ff_act = nn.GELU()
+        self.ff_w2 = QATLinear(ff_dim, dim)
+        self.qat_enabled = False
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
-        """Forward pass with residual connections."""
+        """Forward pass with residual connections and activation quantization."""
         normed = self.ln1(x)
-        attn_out, _ = self.attn(normed, normed, normed, attn_mask=mask)
+        if self.qat_enabled:
+            normed = _fake_quantize_act_i8(normed)
+
+        attn_out = self.attn(normed, mask=mask)
+        if self.qat_enabled:
+            attn_out = _fake_quantize_act_i8(attn_out)
+
+        # Residual add + clamp (firmware clamps to int8)
         x = x + attn_out
+        if self.qat_enabled:
+            x = _fake_quantize_act_i8(x)
+
         normed = self.ln2(x)
-        x = x + self.ff(normed)
+        if self.qat_enabled:
+            normed = _fake_quantize_act_i8(normed)
+
+        ff_out = self.ff_w1(normed)
+        if self.qat_enabled:
+            ff_out = _fake_quantize_act_i8(ff_out)
+        ff_out = self.ff_act(ff_out)
+        if self.qat_enabled:
+            ff_out = _fake_quantize_act_i8(ff_out)
+        ff_out = self.ff_w2(ff_out)
+        if self.qat_enabled:
+            ff_out = _fake_quantize_act_i8(ff_out)
+
+        # Residual add + clamp
+        x = x + ff_out
+        if self.qat_enabled:
+            x = _fake_quantize_act_i8(x)
+
         return x
 
 
@@ -95,7 +255,35 @@ class TinyTransformer(nn.Module):
             for _ in range(N_LAYERS)
         ])
         self.ln_final = RMSNorm(EMBED_DIM)
-        self.output = nn.Linear(EMBED_DIM, VOCAB_SIZE)
+        self.output = QATLinear(EMBED_DIM, VOCAB_SIZE)
+
+    def enable_qat(self) -> None:
+        """Enable fake quantization for all weights and activations."""
+        for block in self.blocks:
+            block.qat_enabled = True
+            block.attn.qat_enabled = True
+            block.attn.wq.qat_enabled = True
+            block.attn.wk.qat_enabled = True
+            block.attn.wv.qat_enabled = True
+            block.attn.wo.qat_enabled = True
+            block.ff_w1.qat_enabled = True
+            block.ff_w2.qat_enabled = True
+        self.output.qat_enabled = True
+        self._qat_enabled = True
+
+    def disable_qat(self) -> None:
+        """Disable fake quantization (for float evaluation)."""
+        for block in self.blocks:
+            block.qat_enabled = False
+            block.attn.qat_enabled = False
+            block.attn.wq.qat_enabled = False
+            block.attn.wk.qat_enabled = False
+            block.attn.wv.qat_enabled = False
+            block.attn.wo.qat_enabled = False
+            block.ff_w1.qat_enabled = False
+            block.ff_w2.qat_enabled = False
+        self.output.qat_enabled = False
+        self._qat_enabled = False
 
     def forward(self, tokens: torch.Tensor) -> torch.Tensor:
         """Forward pass: tokens (B, T) -> logits (B, T, V)."""
@@ -104,6 +292,10 @@ class TinyTransformer(nn.Module):
 
         x = self.token_embed(tokens) + self.pos_embed(pos)
 
+        # Simulate int8 clamp after embedding addition
+        if getattr(self, "_qat_enabled", False):
+            x = _fake_quantize_act_i8(x)
+
         # Causal mask: upper-triangular True mask for positions to ignore
         mask = torch.triu(torch.ones(T, T, device=tokens.device), diagonal=1).bool()
 
@@ -111,6 +303,11 @@ class TinyTransformer(nn.Module):
             x = block(x, mask=mask)
 
         x = self.ln_final(x)
+
+        # Simulate int8 after final layer norm
+        if getattr(self, "_qat_enabled", False):
+            x = _fake_quantize_act_i8(x)
+
         logits = self.output(x)
         return logits
 
@@ -154,15 +351,22 @@ class CharDataset(Dataset):
 # Training
 # ---------------------------------------------------------------------------
 
-def train_model(epochs: int = 10, lr: float = 3e-4) -> TinyTransformer:
-    """Train the character-level transformer.
+def train_model(
+    epochs: int = 10, qat_epochs: int = 10, lr: float = 3e-4,
+) -> TinyTransformer:
+    """Train the character-level transformer with quantization-aware training.
+
+    Phase 1: Standard float training to converge.
+    Phase 2: QAT fine-tuning with simulated int8 quantization so the model
+             learns weights that survive quantization.
 
     Args:
-        epochs: Number of training epochs.
+        epochs: Number of float training epochs.
+        qat_epochs: Number of QAT fine-tuning epochs.
         lr: Learning rate for Adam optimizer.
 
     Returns:
-        Trained model in eval mode.
+        Trained model in eval mode (QAT disabled for float evaluation).
     """
     dataset = CharDataset(TRAIN_TEXT, CONTEXT_LEN)
     loader = DataLoader(dataset, batch_size=64, shuffle=True, drop_last=True)
@@ -171,6 +375,7 @@ def train_model(epochs: int = 10, lr: float = 3e-4) -> TinyTransformer:
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     criterion = nn.CrossEntropyLoss()
 
+    # Phase 1: Float training
     model.train()
     for epoch in range(epochs):
         total_loss = 0.0
@@ -187,6 +392,27 @@ def train_model(epochs: int = 10, lr: float = 3e-4) -> TinyTransformer:
         avg_loss = total_loss / max(1, n_batches)
         print(f"  Epoch {epoch + 1}/{epochs}: loss={avg_loss:.4f}")
 
+    # Phase 2: QAT fine-tuning with higher LR to recover from quantization noise
+    print("  Enabling quantization-aware training...")
+    model.enable_qat()
+    qat_optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+
+    for epoch in range(qat_epochs):
+        total_loss = 0.0
+        n_batches = 0
+        for x, y in loader:
+            qat_optimizer.zero_grad()
+            logits = model(x)
+            loss = criterion(logits.view(-1, VOCAB_SIZE), y.view(-1))
+            loss.backward()
+            qat_optimizer.step()
+            total_loss += loss.item()
+            n_batches += 1
+
+        avg_loss = total_loss / max(1, n_batches)
+        print(f"  QAT {epoch + 1}/{qat_epochs}: loss={avg_loss:.4f}")
+
+    model.disable_qat()
     model.eval()
     return model
 
@@ -195,38 +421,116 @@ def train_model(epochs: int = 10, lr: float = 3e-4) -> TinyTransformer:
 # Quantization
 # ---------------------------------------------------------------------------
 
-def _quantize_tensor(t: torch.Tensor) -> tuple[np.ndarray, float]:
-    """Quantize a float tensor to int8 with symmetric scaling.
+def _quantize_tensor(
+    t: torch.Tensor, *, scale: float | None = None,
+) -> tuple[np.ndarray, float, int]:
+    """Quantize a float tensor to int8 with power-of-2 scaling.
+
+    Uses a power-of-2 scale so that the corresponding right-shift
+    exactly cancels the scale, avoiding systematic magnitude errors
+    that compound across layers.
 
     Args:
         t: Float tensor.
+        scale: If provided, use this scale instead of computing from data.
 
     Returns:
-        Tuple of (int8 numpy array, scale factor).
+        Tuple of (int8 numpy array, scale factor, shift).
     """
     with torch.no_grad():
-        t_max = t.abs().max().item()
-        if t_max < 1e-8:
-            scale = 1.0
+        if scale is None:
+            t_max = t.abs().max().item()
+            if t_max < 1e-8:
+                return (torch.zeros_like(t).to(torch.int8).numpy(), 1.0, 0)
+            # Use largest power-of-2 scale that keeps values in int8 range
+            ideal_scale = 127.0 / t_max
+            shift = int(math.log2(ideal_scale))
+            scale = float(2 ** shift)
         else:
-            scale = 127.0 / t_max
+            shift = int(math.log2(scale))
         q = torch.clamp(torch.round(t * scale), -128, 127).to(torch.int8)
-    return q.numpy(), scale
+    return q.numpy(), scale, shift
 
 
-def quantize_model(model: TinyTransformer) -> dict[str, Any]:
+def _calibrate_activations(model: TinyTransformer) -> dict[str, float]:
+    """Run calibration data through the model to determine activation magnitudes.
+
+    Records the max absolute activation value at each int8 boundary.
+    These are used to compute the combined shift (weight_shift + activation_shift)
+    for the firmware's linear layers.
+
+    Args:
+        model: Trained model in eval mode.
+
+    Returns:
+        Dict mapping boundary name to max absolute activation value.
+    """
+    activation_maxes: dict[str, float] = {}
+    hooks: list[torch.utils.hooks.RemovableHook] = []
+
+    def make_hook(name: str):  # noqa: ANN202
+        def hook_fn(_module: nn.Module, _input: Any, output: Any) -> None:
+            if isinstance(output, torch.Tensor):
+                val = output.detach().abs().max().item()
+            elif isinstance(output, tuple):
+                val = output[0].detach().abs().max().item()
+            else:
+                return
+            activation_maxes[name] = max(activation_maxes.get(name, 0.0), val)
+        return hook_fn
+
+    # Hook RMSNorm outputs (inputs to linear layers)
+    for i, block in enumerate(model.blocks):
+        hooks.append(block.ln1.register_forward_hook(make_hook(f"layer{i}_ln1_out")))
+        hooks.append(block.ln2.register_forward_hook(make_hook(f"layer{i}_ln2_out")))
+
+    # Run calibration data
+    dataset = CharDataset(TRAIN_TEXT, CONTEXT_LEN)
+    loader = DataLoader(dataset, batch_size=64, shuffle=False, drop_last=True)
+
+    model.eval()
+    with torch.no_grad():
+        for batch_idx, (x, _y) in enumerate(loader):
+            model(x)
+            if batch_idx >= 20:  # ~1280 samples is enough
+                break
+
+    for h in hooks:
+        h.remove()
+
+    print("  Calibrated activation magnitudes:")
+    for name, val in sorted(activation_maxes.items()):
+        print(f"    {name}: {val:.4f}")
+
+    return activation_maxes
+
+
+def quantize_model(
+    model: TinyTransformer,
+    act_maxes: dict[str, float] | None = None,
+) -> dict[str, Any]:
     """Quantize all model weights to int8.
 
-    Returns a dict with all quantized weight arrays and scale factors.
+    Uses calibrated activation magnitudes to compute combined shifts
+    (weight_shift + activation_shift) so that the firmware's linear
+    layer outputs fit within int8 range without clipping.
+
+    Args:
+        model: Trained model.
+        act_maxes: Calibrated activation max values. If None, uses
+            weight-only shifts (may cause clipping).
+
+    Returns:
+        Dict with all quantized weight arrays and scale factors.
     """
     weights: dict[str, Any] = {}
 
     with torch.no_grad():
         # Token and position embeddings
-        weights["token_embed"], weights["token_embed_scale"] = _quantize_tensor(
+        weights["token_embed"], weights["token_embed_scale"], _ = _quantize_tensor(
             model.token_embed.weight.data
         )
-        weights["pos_embed"], weights["pos_embed_scale"] = _quantize_tensor(
+        weights["pos_embed"], weights["pos_embed_scale"], _ = _quantize_tensor(
             model.pos_embed.weight.data
         )
 
@@ -235,66 +539,90 @@ def quantize_model(model: TinyTransformer) -> dict[str, Any]:
             prefix = f"layer{layer_idx}_"
 
             # RMSNorm gammas
-            weights[prefix + "ln1_gamma"], _ = _quantize_tensor(block.ln1.weight.data)
-            weights[prefix + "ln2_gamma"], _ = _quantize_tensor(block.ln2.weight.data)
+            weights[prefix + "ln1_gamma"], _, _ = _quantize_tensor(block.ln1.weight.data)
+            weights[prefix + "ln2_gamma"], _, _ = _quantize_tensor(block.ln2.weight.data)
 
-            # Attention: extract Q, K, V, O projection weights
-            # nn.MultiheadAttention stores them combined
+            # Attention: extract Q, K, V, O projection weights from QATLinear
             attn = block.attn
-            weights[prefix + "wq"], weights[prefix + "wq_scale"] = _quantize_tensor(
-                attn.in_proj_weight[:EMBED_DIM]
-            )
-            weights[prefix + "wk"], weights[prefix + "wk_scale"] = _quantize_tensor(
-                attn.in_proj_weight[EMBED_DIM:2*EMBED_DIM]
-            )
-            weights[prefix + "wv"], weights[prefix + "wv_scale"] = _quantize_tensor(
-                attn.in_proj_weight[2*EMBED_DIM:]
-            )
-            weights[prefix + "wo"], weights[prefix + "wo_scale"] = _quantize_tensor(
-                attn.out_proj.weight.data
-            )
+            proj_tensors = [
+                attn.wq.weight.data,
+                attn.wk.weight.data,
+                attn.wv.weight.data,
+                attn.wo.weight.data,
+            ]
+            proj_biases = [
+                ("bq", attn.wq.bias.data),
+                ("bk", attn.wk.bias.data),
+                ("bv", attn.wv.bias.data),
+                ("bo", attn.wo.bias.data),
+            ]
 
-            # Biases (quantize to int32 in accumulator scale)
-            # For simplicity, store raw biases scaled by weight scale
-            for name, bias_data, w_scale_key in [
-                ("bq", attn.in_proj_bias[:EMBED_DIM], prefix + "wq_scale"),
-                ("bk", attn.in_proj_bias[EMBED_DIM:2*EMBED_DIM], prefix + "wk_scale"),
-                ("bv", attn.in_proj_bias[2*EMBED_DIM:], prefix + "wv_scale"),
-                ("bo", attn.out_proj.bias.data, prefix + "wo_scale"),
-            ]:
-                # Bias scale = input_scale * weight_scale
-                # For simplicity, just scale by 256 (rough approximation)
-                b_q = torch.round(bias_data * 256).to(torch.int32)
+            # Weight scale: shared across all attention projections
+            proj_max = max(t.abs().max().item() for t in proj_tensors)
+            proj_shift = int(math.log2(127.0 / proj_max))
+            proj_scale = float(2 ** proj_shift)
+
+            # Activation scale: from calibration (input to Q/K/V projections = ln1 output)
+            # The bias must be scaled by BOTH weight_scale and activation_scale so
+            # that after >> weight_shift, the output preserves the activation scale:
+            #   output = (W_int8 @ x_int8 + bias) >> w_shift = S_x * (W @ x + b)
+            if act_maxes and f"layer{layer_idx}_ln1_out" in act_maxes:
+                act_max = act_maxes[f"layer{layer_idx}_ln1_out"]
+                act_scale = float(2 ** int(math.log2(127.0 / max(act_max, 1e-8))))
+            else:
+                act_scale = 1.0
+
+            for wname, tensor in zip(["wq", "wk", "wv", "wo"], proj_tensors):
+                weights[prefix + wname], weights[prefix + wname + "_scale"], _ = (
+                    _quantize_tensor(tensor, scale=proj_scale)
+                )
+
+            # Biases: scale by weight_scale * activation_scale
+            for name, bias_data in proj_biases:
+                b_q = torch.round(bias_data * proj_scale * act_scale).to(torch.int32)
                 weights[prefix + name] = b_q.numpy()
 
             # Attention scale: 1/sqrt(head_dim) in Q16.16
             weights[prefix + "attn_scale"] = round((1.0 / math.sqrt(HEAD_DIM)) * 65536)
 
-            # FFN weights
-            ff = block.ff
-            weights[prefix + "w1"], weights[prefix + "w1_scale"] = _quantize_tensor(
-                ff[0].weight.data  # Linear 1
+            # Shift = weight shift only (activation scale is in the bias)
+            weights[prefix + "proj_shift"] = proj_shift
+
+            # FFN weights: shared scale across both linear layers
+            ff_tensors = [block.ff_w1.weight.data, block.ff_w2.weight.data]
+            ff_max = max(t.abs().max().item() for t in ff_tensors)
+            ff_shift = int(math.log2(127.0 / ff_max))
+            ff_scale = float(2 ** ff_shift)
+
+            # FFN activation scale (input to FFN = ln2 output)
+            if act_maxes and f"layer{layer_idx}_ln2_out" in act_maxes:
+                ff_act_max = act_maxes[f"layer{layer_idx}_ln2_out"]
+                ff_act_scale = float(2 ** int(math.log2(127.0 / max(ff_act_max, 1e-8))))
+            else:
+                ff_act_scale = 1.0
+
+            weights[prefix + "w1"], weights[prefix + "w1_scale"], _ = (
+                _quantize_tensor(ff_tensors[0], scale=ff_scale)
             )
-            weights[prefix + "w2"], weights[prefix + "w2_scale"] = _quantize_tensor(
-                ff[2].weight.data  # Linear 2
+            weights[prefix + "w2"], weights[prefix + "w2_scale"], _ = (
+                _quantize_tensor(ff_tensors[1], scale=ff_scale)
             )
-            b1_q = torch.round(ff[0].bias.data * 256).to(torch.int32)
-            b2_q = torch.round(ff[2].bias.data * 256).to(torch.int32)
+            b1_q = torch.round(block.ff_w1.bias.data * ff_scale * ff_act_scale).to(torch.int32)
+            b2_q = torch.round(block.ff_w2.bias.data * ff_scale * ff_act_scale).to(torch.int32)
             weights[prefix + "b1"] = b1_q.numpy()
             weights[prefix + "b2"] = b2_q.numpy()
 
-            # Shift values (heuristic: based on accumulator scale)
-            weights[prefix + "proj_shift"] = 8
-            weights[prefix + "ff_shift"] = 8
+            weights[prefix + "ff_shift"] = ff_shift
 
         # Final layer norm
-        weights["ln_final_gamma"], _ = _quantize_tensor(model.ln_final.weight.data)
+        weights["ln_final_gamma"], _, _ = _quantize_tensor(model.ln_final.weight.data)
 
-        # Output projection
-        weights["output_proj"], weights["output_proj_scale"] = _quantize_tensor(
+        # Output projection (no shift applied — logits stay as int32)
+        weights["output_proj"], weights["output_proj_scale"], _ = _quantize_tensor(
             model.output.weight.data
         )
-        b_out = torch.round(model.output.bias.data * 256).to(torch.int32)
+        out_scale = weights["output_proj_scale"]
+        b_out = torch.round(model.output.bias.data * out_scale).to(torch.int32)
         weights["output_bias"] = b_out.numpy()
 
     # Print summary
@@ -331,7 +659,7 @@ def quantized_inference_python(
     Returns:
         Predicted next token (0-255).
     """
-    from riscv_npu.npu.transformer import (
+    from riscv_npu.tools.transformer import (
         TransformerConfig,
         TransformerWeights,
         LayerWeights,
@@ -578,14 +906,17 @@ def export_test_data(
 
 def main() -> None:
     """Train, quantize, and export transformer weights."""
-    firmware_dir = Path(__file__).parent.parent / "firmware" / "transformer"
+    firmware_dir = Path(__file__).parent.parent.parent.parent / "firmware" / "transformer"
     firmware_dir.mkdir(parents=True, exist_ok=True)
 
     print("Training tiny transformer (char-level LM)...")
     model = train_model(epochs=10)
 
+    print("\nCalibrating activation magnitudes...")
+    act_maxes = _calibrate_activations(model)
+
     print("\nQuantizing weights to int8...")
-    weights = quantize_model(model)
+    weights = quantize_model(model, act_maxes)
 
     print("\nExporting C header...")
     export_c_header(weights, str(firmware_dir / "weights.h"))
