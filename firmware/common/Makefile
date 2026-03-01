@@ -8,8 +8,8 @@ AS      := riscv64-unknown-elf-as
 LD      := riscv64-unknown-elf-ld
 OBJCOPY := riscv64-unknown-elf-objcopy
 
-ARCH    := rv32im
-ABI     := ilp32
+ARCH    := rv32imf
+ABI     := ilp32f
 
 CFLAGS  := -march=$(ARCH) -mabi=$(ABI) -O2 -nostdlib -ffreestanding -Wall
 ASFLAGS := -march=$(ARCH) -mabi=$(ABI)

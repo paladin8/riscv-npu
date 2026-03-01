@@ -17,6 +17,7 @@ from .decode import (
     OP_FNMADD,
     OP_OP_FP,
 )
+from .fpu import FpuState
 
 if TYPE_CHECKING:
     from .cpu import CPU
@@ -43,10 +44,8 @@ def _round_to_single(value: float) -> float:
     return _bits_to_float(_float_to_bits(value))
 
 
-def _round_to_single_with_flags(value: float, fpu: "FpuState") -> float:
+def _round_to_single_with_flags(value: float, fpu: FpuState) -> float:
     """Round to single-precision and set NX flag if inexact."""
-    from .fpu import FpuState  # noqa: F811
-
     result = _round_to_single(value)
     # Inexact if the double-precision value differs from single-precision
     if not math.isnan(value) and not math.isinf(value) and value != result:
@@ -199,13 +198,11 @@ def _exec_fnmadd(inst: Instruction, cpu: CPU, pc: int) -> int:
     return pc + 4
 
 
-def _check_nan_3(inst: Instruction, fpu: "FpuState") -> bool:
+def _check_nan_3(inst: Instruction, fpu: FpuState) -> bool:
     """Check for NaN inputs in a 3-operand instruction. Sets NV flag for sNaN.
 
     Returns True if any input is NaN (result written as canonical NaN).
     """
-    from .fpu import FpuState  # noqa: F811
-
     a_bits = fpu.fregs.read_bits(inst.rs1)
     b_bits = fpu.fregs.read_bits(inst.rs2)
     c_bits = fpu.fregs.read_bits(inst.rs3)
@@ -221,7 +218,7 @@ def _check_nan_3(inst: Instruction, fpu: "FpuState") -> bool:
     return False
 
 
-def _write_float_result(fpu: "FpuState", rd: int, result: float) -> None:
+def _write_float_result(fpu: FpuState, rd: int, result: float) -> None:
     """Write a float result, handling NaN canonicalization and NV flag for invalid ops."""
     if math.isnan(result):
         fpu.set_flags(nv=True)
@@ -271,7 +268,7 @@ def _exec_op_fp(inst: Instruction, cpu: CPU, pc: int) -> int:
     return pc + 4
 
 
-def _exec_fadd(inst: Instruction, fpu: "FpuState") -> None:
+def _exec_fadd(inst: Instruction, fpu: FpuState) -> None:
     """FADD.S: f[rd] = f[rs1] + f[rs2]."""
     a_bits = fpu.fregs.read_bits(inst.rs1)
     b_bits = fpu.fregs.read_bits(inst.rs2)
@@ -286,7 +283,7 @@ def _exec_fadd(inst: Instruction, fpu: "FpuState") -> None:
     _write_float_result(fpu, inst.rd, result)
 
 
-def _exec_fsub(inst: Instruction, fpu: "FpuState") -> None:
+def _exec_fsub(inst: Instruction, fpu: FpuState) -> None:
     """FSUB.S: f[rd] = f[rs1] - f[rs2]."""
     a_bits = fpu.fregs.read_bits(inst.rs1)
     b_bits = fpu.fregs.read_bits(inst.rs2)
@@ -301,7 +298,7 @@ def _exec_fsub(inst: Instruction, fpu: "FpuState") -> None:
     _write_float_result(fpu, inst.rd, result)
 
 
-def _exec_fmul(inst: Instruction, fpu: "FpuState") -> None:
+def _exec_fmul(inst: Instruction, fpu: FpuState) -> None:
     """FMUL.S: f[rd] = f[rs1] * f[rs2]."""
     a_bits = fpu.fregs.read_bits(inst.rs1)
     b_bits = fpu.fregs.read_bits(inst.rs2)
@@ -316,7 +313,7 @@ def _exec_fmul(inst: Instruction, fpu: "FpuState") -> None:
     _write_float_result(fpu, inst.rd, result)
 
 
-def _exec_fdiv(inst: Instruction, fpu: "FpuState") -> None:
+def _exec_fdiv(inst: Instruction, fpu: FpuState) -> None:
     """FDIV.S: f[rd] = f[rs1] / f[rs2]."""
     a_bits = fpu.fregs.read_bits(inst.rs1)
     b_bits = fpu.fregs.read_bits(inst.rs2)
@@ -345,7 +342,7 @@ def _exec_fdiv(inst: Instruction, fpu: "FpuState") -> None:
     _write_float_result(fpu, inst.rd, result)
 
 
-def _exec_fsqrt(inst: Instruction, fpu: "FpuState") -> None:
+def _exec_fsqrt(inst: Instruction, fpu: FpuState) -> None:
     """FSQRT.S: f[rd] = sqrt(f[rs1])."""
     a_bits = fpu.fregs.read_bits(inst.rs1)
     if _is_snan(a_bits):
@@ -370,7 +367,7 @@ def _exec_fsqrt(inst: Instruction, fpu: "FpuState") -> None:
     _write_float_result(fpu, inst.rd, result)
 
 
-def _exec_fsgnj(inst: Instruction, fpu: "FpuState", funct3: int) -> None:
+def _exec_fsgnj(inst: Instruction, fpu: FpuState, funct3: int) -> None:
     """Sign injection: FSGNJ.S, FSGNJN.S, FSGNJX.S."""
     rs1_bits = fpu.fregs.read_bits(inst.rs1)
     rs2_bits = fpu.fregs.read_bits(inst.rs2)
@@ -389,7 +386,7 @@ def _exec_fsgnj(inst: Instruction, fpu: "FpuState", funct3: int) -> None:
     fpu.fregs.write_bits(inst.rd, sign | body)
 
 
-def _exec_fminmax(inst: Instruction, fpu: "FpuState", funct3: int) -> None:
+def _exec_fminmax(inst: Instruction, fpu: FpuState, funct3: int) -> None:
     """FMIN.S / FMAX.S."""
     a_bits = fpu.fregs.read_bits(inst.rs1)
     b_bits = fpu.fregs.read_bits(inst.rs2)
@@ -436,7 +433,7 @@ def _exec_fminmax(inst: Instruction, fpu: "FpuState", funct3: int) -> None:
 
 
 def _exec_fcmp(
-    inst: Instruction, fpu: "FpuState", cpu: "CPU", funct3: int
+    inst: Instruction, fpu: FpuState, cpu: "CPU", funct3: int
 ) -> None:
     """FEQ.S, FLT.S, FLE.S: result goes to integer register x[rd]."""
     a_bits = fpu.fregs.read_bits(inst.rs1)
@@ -480,7 +477,7 @@ def _exec_fcmp(
         raise ValueError(f"Unknown FCMP funct3: {funct3}")
 
 
-def _exec_fcvt_w(inst: Instruction, fpu: "FpuState", cpu: "CPU") -> None:
+def _exec_fcvt_w(inst: Instruction, fpu: FpuState, cpu: "CPU") -> None:
     """FCVT.W.S / FCVT.WU.S: convert float to integer."""
     a_bits = fpu.fregs.read_bits(inst.rs1)
 
@@ -533,34 +530,40 @@ def _exec_fcvt_w(inst: Instruction, fpu: "FpuState", cpu: "CPU") -> None:
         raise ValueError(f"Unknown FCVT.W rs2: {inst.rs2}")
 
 
-def _exec_fcvt_s(inst: Instruction, fpu: "FpuState", cpu: "CPU") -> None:
+def _exec_fcvt_s(inst: Instruction, fpu: FpuState, cpu: "CPU") -> None:
     """FCVT.S.W / FCVT.S.WU: convert integer to float."""
     x_val = cpu.registers.read(inst.rs1)
 
     if inst.rs2 == 0:  # FCVT.S.W (signed)
         signed_val = to_signed(x_val)
-        result = _round_to_single(float(signed_val))
+        exact = float(signed_val)
+        result = _round_to_single(exact)
+        if exact != result:
+            fpu.set_flags(nx=True)
         fpu.fregs.write_float(inst.rd, result)
     elif inst.rs2 == 1:  # FCVT.S.WU (unsigned)
-        result = _round_to_single(float(x_val))
+        exact = float(x_val)
+        result = _round_to_single(exact)
+        if exact != result:
+            fpu.set_flags(nx=True)
         fpu.fregs.write_float(inst.rd, result)
     else:
         raise ValueError(f"Unknown FCVT.S rs2: {inst.rs2}")
 
 
-def _exec_fmv_x_w(inst: Instruction, fpu: "FpuState", cpu: "CPU") -> None:
+def _exec_fmv_x_w(inst: Instruction, fpu: FpuState, cpu: "CPU") -> None:
     """FMV.X.W: x[rd] = f[rs1] (bitwise move, float reg -> int reg)."""
     bits = fpu.fregs.read_bits(inst.rs1)
     cpu.registers.write(inst.rd, bits)
 
 
-def _exec_fmv_w_x(inst: Instruction, fpu: "FpuState", cpu: "CPU") -> None:
+def _exec_fmv_w_x(inst: Instruction, fpu: FpuState, cpu: "CPU") -> None:
     """FMV.W.X: f[rd] = x[rs1] (bitwise move, int reg -> float reg)."""
     bits = cpu.registers.read(inst.rs1)
     fpu.fregs.write_bits(inst.rd, bits)
 
 
-def _exec_fclass(inst: Instruction, fpu: "FpuState", cpu: "CPU") -> None:
+def _exec_fclass(inst: Instruction, fpu: FpuState, cpu: "CPU") -> None:
     """FCLASS.S: x[rd] = classify(f[rs1])."""
     bits = fpu.fregs.read_bits(inst.rs1)
     cpu.registers.write(inst.rd, _classify(bits))

@@ -32,7 +32,7 @@ _STACK_TOP = _BASE + _RAM_SIZE - 16  # Top of RAM, 16-byte aligned
 def render_debugger(state: DebuggerState) -> Layout:
     """Build the Rich Layout with all debugger panels.
 
-    Layout structure:
+    Layout structure (top gets 3x vertical space, bottom 1x):
         +------------------+------------------+
         |   Registers      |                  |
         +------------------+                  |
@@ -60,8 +60,8 @@ def render_debugger(state: DebuggerState) -> Layout:
 
     # Top half: registers/NPU + disassembly
     layout.split_column(
-        Layout(name="top", ratio=2),
-        Layout(name="bottom", ratio=2),
+        Layout(name="top", ratio=3),
+        Layout(name="bottom", ratio=1),
         Layout(name="status", size=status_height),
     )
 
@@ -109,7 +109,7 @@ def render_debugger(state: DebuggerState) -> Layout:
     layout["disassembly"].update(Panel(disasm_text, title="Disassembly"))
 
     # Memory panel
-    mem_text = format_hex_dump(state.cpu.memory, state.mem_view_addr, num_rows=16)
+    mem_text = format_hex_dump(state.cpu.memory, state.mem_view_addr, num_rows=8)
     layout["memory"].update(Panel(mem_text, title=f"Memory @ 0x{state.mem_view_addr:08X}"))
 
     # Output panel (UART + syscall stdout)
@@ -118,10 +118,10 @@ def render_debugger(state: DebuggerState) -> Layout:
         uart_text = uart_content.decode("utf-8", errors="replace")
     except Exception:
         uart_text = repr(uart_content)
-    # Show last 20 lines
+    # Show last 8 lines
     uart_lines = uart_text.split("\n")
-    if len(uart_lines) > 20:
-        uart_lines = uart_lines[-20:]
+    if len(uart_lines) > 8:
+        uart_lines = uart_lines[-8:]
     layout["output"].update(Panel("\n".join(uart_lines), title="Output"))
 
     # Status bar

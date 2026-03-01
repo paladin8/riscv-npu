@@ -552,6 +552,27 @@ class TestFcvtSW:
         val = cpu.fpu_state.fregs.read_float(3)
         assert val > 4e9
 
+    def test_fcvt_s_w_inexact_sets_nx(self) -> None:
+        """16777217 (2^24+1) can't be exactly represented in float32."""
+        cpu = _make_cpu()
+        cpu.registers.write(1, 0x01000001)  # 16777217
+        _exec(cpu, _r_type(OP_OP_FP, rd=3, funct3=0, rs1=1, rs2=0, funct7=0x68))
+        assert cpu.fpu_state.fflags & 0x01  # NX flag set
+
+    def test_fcvt_s_wu_inexact_sets_nx(self) -> None:
+        """Large unsigned value loses precision in float32."""
+        cpu = _make_cpu()
+        cpu.registers.write(1, 0xFFFFFFFF)  # 4294967295
+        _exec(cpu, _r_type(OP_OP_FP, rd=3, funct3=0, rs1=1, rs2=1, funct7=0x68))
+        assert cpu.fpu_state.fflags & 0x01  # NX flag set
+
+    def test_fcvt_s_w_exact_no_nx(self) -> None:
+        """Small integers are exactly representable — no NX flag."""
+        cpu = _make_cpu()
+        cpu.registers.write(1, 42)
+        _exec(cpu, _r_type(OP_OP_FP, rd=3, funct3=0, rs1=1, rs2=0, funct7=0x68))
+        assert cpu.fpu_state.fflags == 0  # No flags set
+
 
 # ============================================================
 # Move (bitwise)

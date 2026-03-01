@@ -1,6 +1,6 @@
 # riscv-npu
 
-RISC-V (RV32IM) emulator in Python with custom NPU instructions for neural network inference.
+RISC-V (RV32IMF) emulator in Python with custom NPU instructions for neural network inference.
 
 ## Prerequisites
 
@@ -38,15 +38,15 @@ Use `--write SYMBOL:FILE` to load file contents into memory at an ELF symbol's a
 
 ### Debugger commands
 
-| Command                  | Description                                     |
-| ------------------------ | ----------------------------------------------- |
-| `s` / `step`             | Execute one instruction                         |
-| `c` / `continue`         | Run until breakpoint or halt                    |
-| `r` / `run <hz> [max]`   | Run at fixed speed with live display (Ctrl+C)   |
-| `b <hex_addr>`           | Toggle breakpoint (e.g. `b 80000010`)           |
-| `g <hex_addr>`           | Jump memory view to address                     |
-| `h` / `help`             | Show command help                               |
-| `q` / `quit`             | Exit debugger                                   |
+| Command                | Description                                   |
+|------------------------|-----------------------------------------------|
+| `s` / `step`           | Execute one instruction                       |
+| `c` / `continue`       | Run until breakpoint or halt                  |
+| `r` / `run <hz> [max]` | Run at fixed speed with live display (Ctrl+C) |
+| `b <hex_addr>`         | Toggle breakpoint (e.g. `b 80000010`)         |
+| `g <hex_addr>`         | Jump memory view to address                   |
+| `h` / `help`           | Show command help                             |
+| `q` / `quit`           | Exit debugger                                 |
 
 ## Firmware
 
@@ -58,16 +58,18 @@ Firmware programs are C code that runs **on** the emulated CPU. Each program liv
 cd firmware/hello && make
 ```
 
-This requires a RISC-V cross-compiler. All firmware is compiled with `-march=rv32im -mabi=ilp32` — the emulator does **not** support the A (atomics) or C (compressed) extensions.
+This requires a RISC-V cross-compiler. All firmware is compiled with `-march=rv32imf -mabi=ilp32f` — the emulator does **not** support the A (atomics) or C (compressed) extensions.
 
 ### Example programs
 
 | Program       | Description                                                      |
-| ------------- | ---------------------------------------------------------------- |
+|---------------|------------------------------------------------------------------|
 | `fibonacci`   | Computes fib(10), returns result in `a0`                         |
 | `hello`       | Prints "Hello, World!" via write syscall                         |
 | `uart-hello`  | Prints via direct UART register access (memory-mapped I/O)       |
 | `sort`        | Insertion sort, returns 1 on success                             |
+| `newton`      | Square roots via Newton's method, verified against fsqrt         |
+| `fpu_test`    | Tests all RV32F floating-point instructions (34 checks)          |
 | `npu_test`    | Exercises all NPU instructions (MACC, RELU, QMUL, CLAMP, GELU)   |
 | `mnist`       | Quantized 784->128->10 MLP, classifies handwritten digits        |
 | `transformer` | Tiny char-level transformer LM (2 layers, 4 heads, embed_dim=64) |

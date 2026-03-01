@@ -66,5 +66,5 @@ Signed interpretation: if val >= 0x80000000, val is negative (val - 0x100000000)
 This is the #1 source of subtle bugs. Be vigilant.
 
 ## Firmware compilation
-All firmware MUST be compiled with: -march=rv32im -mabi=ilp32
-This emulator does NOT support the A (atomics) or C (compressed) extensions. The C extension is especially dangerous — gcc enables it by default for rv32imac targets, producing 16-bit instructions that the decoder can't handle. Always pass -march=rv32im explicitly.
+All firmware MUST be compiled with: -march=rv32imf -mabi=ilp32f
+This emulator does NOT support the A (atomics) or C (compressed) extensions. The C extension is especially dangerous — gcc enables it by default for rv32imac targets, producing 16-bit instructions that the decoder can't handle. Always pass -march=rv32imf explicitly.
