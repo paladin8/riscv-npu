@@ -1,7 +1,7 @@
 # Project State
 
 ## Status
-VMAC instruction COMPLETE. 564 tests passing. MNIST quantized inference works end-to-end with VMAC.
+Phase 7 (Transformer Extension) COMPLETE. 635 tests collected, 633 passing, 2 integration skipped (need firmware build). Was 564 tests.
 
 ## What's implemented
 - RV32IM: all 49 instructions (41 base + 8 M extension)
@@ -12,19 +12,23 @@ VMAC instruction COMPLETE. 564 tests passing. MNIST quantized inference works en
 - SyscallHandler: write(64), read(63), exit(93), brk(214) via ECALL dispatch
 - CLI: run + debug subcommands, MemoryBus + UART + SyscallHandler wired up
 - TUI debugger: disasm, registers, memory hex dump, NPU panel, output panel
-- NPU: 9 custom instructions (opcode 0x0B), NpuState (64-bit acc + 4 vregs)
-  - MACC, VMAC, RELU, QMUL, CLAMP, GELU (lookup table), RSTACC, LDVEC, STVEC
-  - VMAC: funct3=0/funct7=1, reads int8 arrays from memory, dot product in one instruction
+- NPU: 14 custom instructions (opcode 0x0B), NpuState (64-bit acc + 4 vregs)
+  - Phase 6: MACC, VMAC, RELU, QMUL, CLAMP, GELU, RSTACC, LDVEC, STVEC
+  - Phase 7: VEXP, VRSQRT, VMUL, VREDUCE, VMAX (Q16.16 fixed-point)
 - Compliance: 50 riscv-tests passing (42 rv32ui + 8 rv32um)
-- Firmware: fibonacci, sort, hello, uart-hello, npu_test, mnist (all PASS)
-- MNIST: quantized 784->128(ReLU)->10 MLP, ~99% accuracy, uses VMAC for dot products
-- Docs: docs/npu-design.md, docs/isa-reference.md
+- Firmware: fibonacci, sort, hello, uart-hello, npu_test, mnist, transformer
+- MNIST: quantized 784->128(ReLU)->10 MLP, ~99% accuracy, uses VMAC
+- Transformer: char-level LM (dim=64, heads=4, layers=2, vocab=256, ctx=32)
+  - Python reference: src/riscv_npu/npu/transformer.py
+  - Weight exporter: tools/export_transformer_weights.py
+  - C firmware: firmware/transformer/main.c
+- Docs: docs/npu-design.md, docs/isa-reference.md (both updated for Phase 7)
 
 ## Key patterns
-- NPU instructions dispatched via funct3 on opcode 0x0B; MACC/VMAC share funct3=0, differentiated by funct7
-- VMAC firmware: L1 converts uint8 pixels to int8 (subtract 128), biases pre-adjusted at export (b += 128*sum(w))
-- Layer 1: VMAC(signed_pixels, weights) -> SRA shift1 -> CLAMP -> RELU
-- Layer 2: VMAC(hidden_int8, weights) -> raw int32 argmax (no rescale)
+- NPU instructions: opcode 0x0B, funct3 selects operation group
+- funct3=0 sub-dispatched by funct7: MACC(0), VMAC(1), VEXP(2), VRSQRT(3), VMUL(4), VREDUCE(5), VMAX(6)
+- Q16.16 fixed-point: 1.0 = 65536, used for softmax/RMSNorm intermediates
+- VMUL reads scale from acc_lo (avoids needing 4th register operand)
 - Toolchain: riscv64-unknown-elf-gcc -march=rv32im -mabi=ilp32
 - torch/torchvision in optional deps (uv run --extra torch)
 
