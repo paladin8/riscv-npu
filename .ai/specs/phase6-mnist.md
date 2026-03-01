@@ -8,39 +8,38 @@ Quantized MLP runs on emulator, correctly classifies digits.
 - firmware/mnist/weights.h: generated weight arrays
 - firmware/mnist/nn_runtime.c: linear layer + activation using NPU_MACC, NPU_RSTACC, NPU_RELU, NPU_CLAMP
 - firmware/mnist/main.c: load test image, run inference, print prediction
-- tests/integration/test_mnist.py: run multiple images, compare to PyTorch reference
+- tests/integration/test_mnist.py: run multiple images, compare to Python quantized reference
 
 ## Network
-- Input: 784 int8 (28x28 flattened)
+- Input: 784 uint8 (28x28 flattened, pixel values 0-255)
 - Hidden: 128, ReLU
-- Output: 10, argmax
-- ~100KB weights
+- Output: 10, argmax on raw int32 scores
+- ~102KB weights
 
 ## Design Decisions
 
 ### Quantization scheme
-- **Per-layer symmetric int8 quantization**: weights are quantized to int8 [-128, 127] using a per-layer scale factor.
-- **Scale factor encoding**: stored as int32 fixed-point (scale * 256) so QMUL can rescale accumulator results.
-- **Biases stored as int32**: biases are pre-scaled to match the accumulator scale (input_scale * weight_scale), avoiding runtime rescaling of bias.
-- **Activations**: input pixels are uint8 [0, 255] -> int8 [-128, 127] by subtracting 128. Hidden activations are int8 after CLAMP.
+- **Per-layer symmetric int8 quantization**: weights quantized to int8 [-128, 127] using w_scale = 127/max|w|.
+- **Layer 1 input**: raw pixel bytes [0, 255] as unsigned int32 in MACC (no int8 conversion, avoids offset bugs).
+- **Accumulator rescaling**: arithmetic right shift (SRA) instead of QMUL. QMUL's 8-bit shift is insufficient for the large accumulator scale (255 * w_scale ~ 50000). A calibrated shift amount (shift1 ~ 13) works precisely.
+- **Biases stored as int32**: biases pre-scaled to accumulator scale (255 * w_scale for layer 1, hidden_scale * w2_scale for layer 2).
+- **Layer 2 output**: raw int32 accumulator values used for argmax (no rescaling needed -- relative ordering preserved).
 
 ### Firmware memory layout
-- Weights and biases are compiled into the ELF as const arrays in weights.h (~102KB total).
-- Test image (784 bytes) loaded at a known symbol `test_image` in .bss.
-- The test harness writes image bytes into RAM at the `test_image` address before running.
-- Output: firmware prints the predicted digit (0-9) as an ASCII character followed by newline.
+- Weights and biases compiled into ELF as const arrays in weights.h (~102KB).
+- Test image (784 bytes) at known symbol `test_image` in .bss.
+- Test harness writes image bytes into RAM at `test_image` address before running.
+- Output: firmware prints predicted digit (0-9) as ASCII followed by newline.
 
 ### NPU usage in linear layer
-- For each output neuron: reset accumulator (RSTACC), then MACC over input*weight pairs, then RSTACC to read result.
-- Process 1 element at a time: MACC(input[j], weight[i][j]) for all j, then read accumulator.
-- After accumulation: add bias (int32), apply QMUL with output_scale to rescale, CLAMP to int8.
-- After layer 1: apply RELU. Layer 2 has no activation (raw scores for argmax).
+- Layer 1 (linear_relu): RSTACC (clear) -> MACC(pixel_uint8, weight_int8) for all inputs -> RSTACC (read) -> add bias -> SRA shift1 -> CLAMP -> RELU -> store int8.
+- Layer 2 (linear_raw): RSTACC -> MACC(hidden_int8, weight_int8) -> RSTACC -> add bias -> store raw int32.
+- Argmax on int32 output array to find predicted digit.
 
 ### Test approach
-- export_weights.py saves: weights.h (C header), test_data.py (Python module with quantized weights, test images, and PyTorch reference predictions).
-- Integration test loads the pre-exported test_data.py, writes each image into ELF memory, runs inference, compares to reference.
-- Accuracy target: >=95% on 100 test images.
-- Test also verifies single known-good image for deterministic correctness.
+- export_weights.py saves: weights.h (C header), test_data.py (Python module with test images and quantized reference predictions).
+- Integration test loads test_data.py, writes each image into ELF memory, runs inference, compares to reference.
+- Accuracy target: >=95% on 100 test images (achieves ~99% in practice).
 
 ## Deliverables List
 
@@ -58,123 +57,48 @@ Quantized MLP runs on emulator, correctly classifies digits.
 **Files**: `tools/export_weights.py`
 
 **Functions**:
-- `train_model() -> torch.nn.Module`: Train 784->128->10 MLP on MNIST to ~97% accuracy. Uses Adam, 5 epochs, CrossEntropyLoss.
-- `quantize_weights(model) -> dict`: Extract and quantize each layer's weights to int8 with per-layer scale. Returns dict with keys: w1 (int8 784x128), b1 (int32 128), s1 (int32 scale), w2 (int8 128x10), b2 (int32 10), s2 (int32 scale).
-- `export_c_header(weights: dict, path: str) -> None`: Write weights.h with C arrays.
-- `export_test_data(model, weights: dict, path: str) -> None`: Save Python module with quantized weights, 100 test images (int8), their labels, and PyTorch float-model predictions.
-- `main()`: Orchestrate training, quantization, export.
+- `train_model(epochs, lr) -> MnistMLP`: Train 784->128->10 MLP on MNIST. Adam, 5 epochs, CrossEntropyLoss. ~97.5% accuracy.
+- `quantize_weights(model) -> dict`: Per-layer symmetric int8 quantization with calibrated shift. Returns w1, b1, shift1, w2, b2, and scale metadata.
+- `quantized_inference_python(image_uint8, w1, b1, shift1, w2, b2) -> int`: Reference quantized inference matching firmware behavior exactly.
+- `export_c_header(weights, path) -> None`: Write weights.h with C arrays.
+- `export_test_data(model, weights, path, num_images) -> None`: Save test_data.py with 100 test images + reference predictions.
 
 **Quantization math**:
-- `scale = 127.0 / max(abs(weight_tensor))`
-- `quantized = clamp(round(weight * scale), -128, 127)`
-- Output scale for QMUL: `round(1.0 / (input_scale * weight_scale) * 256)` -- this rescales the int32 accumulator back to int8 range.
-- Bias quantization: `bias_q = round(bias * input_scale * weight_scale)` as int32.
+- `w_scale = 127.0 / max(abs(weight_tensor))`
+- `w_q = clamp(round(w_float * w_scale), -128, 127)`
+- Layer 1 bias: `b1_q = round(b1_float * 255 * w1_scale)` (accumulator scale)
+- Layer 1 shift: `shift1 = round(log2(255 * w1_scale / hidden_scale))` where hidden_scale targets max activation -> 120.
+- Layer 2 bias: `b2_q = round(b2_float * hidden_scale_actual * w2_scale)` (layer 2 accumulator scale)
 
-### D2: firmware/mnist/weights.h
-**Files**: `firmware/mnist/weights.h`
-
-Generated by export_weights.py. Contains:
-```c
-#ifndef WEIGHTS_H
-#define WEIGHTS_H
-#include <stdint.h>
-
-// Layer 1: 784 -> 128
-static const int8_t W1[128][784] = { ... };
-static const int32_t B1[128] = { ... };
-static const int32_t S1 = ...; // output scale for QMUL
-
-// Layer 2: 128 -> 10
-static const int8_t W2[10][128] = { ... };
-static const int32_t B2[10] = { ... };
-static const int32_t S2 = ...; // output scale for QMUL
-#endif
-```
+### D2: firmware/mnist/weights.h (generated)
+Contains: W1[128][784] (int8), B1[128] (int32), SHIFT1 (int32), W2[10][128] (int8), B2[10] (int32).
 
 ### D3: firmware/mnist/nn_runtime.c + nn_runtime.h
-**Files**: `firmware/mnist/nn_runtime.c`, `firmware/mnist/nn_runtime.h`
-
 **Functions**:
-```c
-// Apply a linear layer: out[out_dim] = W[out_dim][in_dim] @ in[in_dim] + bias[out_dim]
-// Then rescale with QMUL(result, scale) and CLAMP to int8.
-void linear(const int8_t *input, const int8_t *weights, const int32_t *bias,
-            int32_t scale, int out_dim, int in_dim, int8_t *output);
-
-// Apply ReLU activation in-place on int8 array.
-void relu(int8_t *data, int len);
-
-// Find index of maximum value in int8 array.
-int argmax(const int8_t *data, int len);
-
-// Run full inference: input[784] -> predicted digit [0-9].
-int inference(const int8_t *image);
-```
-
-**linear() implementation** (using NPU):
-```c
-for (int i = 0; i < out_dim; i++) {
-    NPU_RSTACC();  // clear accumulator
-    for (int j = 0; j < in_dim; j++) {
-        NPU_MACC((int32_t)input[j], (int32_t)weights[i * in_dim + j]);
-    }
-    int32_t acc = NPU_RSTACC();  // read accumulated dot product
-    acc += bias[i];              // add bias (already in accumulator scale)
-    acc = NPU_QMUL(acc, scale); // rescale to output int8 range
-    output[i] = (int8_t)NPU_CLAMP(acc);  // clamp to [-128, 127]
-}
-```
+- `linear_relu(input, weights, bias, shift, out_dim, in_dim, output)`: Layer with MACC + SRA + CLAMP + RELU.
+- `linear_raw(input, weights, bias, out_dim, in_dim, output)`: Layer with MACC, raw int32 output for argmax.
+- `argmax(data, len) -> int`: Index of maximum int32 value.
+- `inference(image) -> int`: Full forward pass using exported weights.
 
 ### D4: firmware/mnist/main.c + Makefile
-**Files**: `firmware/mnist/main.c`, `firmware/mnist/Makefile`
-
-**main.c**:
-```c
-#include "nn_runtime.h"
-#include "weights.h"
-#include "../common/npu.h"
-
-int8_t test_image[784];  // Written by test harness before run
-
-int main(void) {
-    int digit = inference(test_image);
-    // Print digit as ASCII + newline
-    char buf[3];
-    if (digit >= 10) { buf[0] = '1'; buf[1] = '0' + (digit - 10); buf[2] = '\n'; write(1, buf, 3); }
-    else { buf[0] = '0' + digit; buf[1] = '\n'; write(1, buf, 2); }
-    return 0;
-}
-```
-
-**Makefile**: follows pattern from firmware/npu_test/Makefile. Links start.o + main.o + nn_runtime.o + syscalls.o -> mnist.elf.
+- `test_image[784]` buffer in .bss for test harness to write to.
+- `main()`: calls `inference(test_image)`, prints digit via write syscall.
+- Makefile: links start.o + main.o + nn_runtime.o + syscalls.o -> mnist.elf.
 
 ### D5: tests/integration/test_mnist.py
-**Files**: `tests/integration/test_mnist.py`
-
-**Test functions**:
-- `test_mnist_single_image()`: Run one known image, verify correct digit output.
-- `test_mnist_accuracy()`: Run 100 test images, verify >=95% match PyTorch reference.
-- `test_mnist_all_digits_represented()`: Verify test set covers all 10 digits.
-
-**Approach**:
-- Load pre-exported test data (images + reference predictions) from `firmware/mnist/test_data.py`.
-- For each image: find `test_image` symbol in ELF, write 784 int8 bytes to that address, run CPU, capture stdout, parse digit.
-- Compare to PyTorch reference prediction.
+- `test_mnist_single_image`: Run first test image, verify matches quantized reference.
+- `test_mnist_accuracy`: Run 100 images, verify >=95% accuracy vs quantized reference.
+- `test_mnist_all_digits_represented`: Verify test set covers all 10 digits.
+- Uses skipif guards for missing toolchain/ELF/test_data.
 
 ## Test Coverage Requirements
-
-### D1: export_weights.py
-- No pytest tests (interactive tool). Verified by running it and checking outputs exist.
-
-### D3-D5: Integration tests
-- `test_mnist_single_image`: loads one image, runs ELF, checks printed digit matches reference.
-- `test_mnist_accuracy`: runs 100 images, asserts >=95% correct vs PyTorch reference.
-- `test_mnist_all_digits_represented`: test image set has at least one of each digit 0-9.
+- `test_mnist_single_image`: deterministic single-image correctness check.
+- `test_mnist_accuracy`: statistical accuracy check (>=95%, typically ~99%).
+- `test_mnist_all_digits_represented`: data coverage check.
 
 ## Acceptance Criteria
-
-1. `uv run python tools/export_weights.py` generates `firmware/mnist/weights.h` and `firmware/mnist/test_data.py`
-2. `cd firmware/mnist && make` produces `mnist.elf` without errors
+1. `uv run --extra torch python tools/export_weights.py` generates weights.h and test_data.py
+2. `cd firmware/mnist && make` produces mnist.elf without errors
 3. `uv run python -m riscv_npu run firmware/mnist/mnist.elf` prints a digit and exits cleanly
 4. `uv run pytest tests/integration/test_mnist.py -v` passes with >=95% accuracy
-5. `uv run pytest` shows all tests passing (555 + new tests)
+5. `uv run pytest` shows all tests passing (555 + 3 new = 558)

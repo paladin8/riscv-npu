@@ -12,3 +12,6 @@ build/
 tests/fixtures/riscv-tests/*
 !tests/fixtures/riscv-tests/build.sh
 uv.lock
+data/
+firmware/mnist/weights.h
+firmware/mnist/test_data.py
