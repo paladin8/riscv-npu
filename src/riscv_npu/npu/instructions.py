@@ -39,7 +39,10 @@ def execute_npu(inst: Instruction, cpu: CPU) -> int:
     pc = cpu.pc
 
     if f3 == 0:
-        _exec_macc(inst, regs, npu)
+        if inst.funct7 == 1:
+            _exec_vmac(inst, regs, cpu.memory, npu)
+        else:
+            _exec_macc(inst, regs, npu)
     elif f3 == 1:
         _exec_relu(inst, regs)
     elif f3 == 2:
@@ -70,6 +73,30 @@ def _exec_macc(inst: Instruction, regs: 'RegisterFile', npu: NpuState) -> None:
     rs2_val = to_signed(regs.read(inst.rs2))
     product = rs1_val * rs2_val
     acc_add(npu, product)
+
+
+def _exec_vmac(
+    inst: Instruction,
+    regs: 'RegisterFile',
+    mem: 'MemoryBus',
+    npu: NpuState,
+) -> None:
+    """NPU.VMAC: acc += dot(mem_int8[rs1..+n], mem_int8[rs2..+n]).
+
+    Reads rd as element count, rs1/rs2 as base addresses of int8 arrays.
+    For each pair of bytes, sign-extends to int8, multiplies, and adds
+    the product to the 64-bit accumulator. Does NOT reset the accumulator.
+    """
+    n = regs.read(inst.rd)
+    addr_a = regs.read(inst.rs1)
+    addr_b = regs.read(inst.rs2)
+    for i in range(n):
+        byte_a = mem.read8((addr_a + i) & 0xFFFFFFFF)
+        byte_b = mem.read8((addr_b + i) & 0xFFFFFFFF)
+        # Sign-extend bytes to int8
+        a = byte_a - 256 if byte_a >= 128 else byte_a
+        b = byte_b - 256 if byte_b >= 128 else byte_b
+        acc_add(npu, a * b)
 
 
 def _exec_relu(inst: Instruction, regs: 'RegisterFile') -> None:

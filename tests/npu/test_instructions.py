@@ -110,6 +110,106 @@ class TestMACC:
         assert acc_get64(cpu.npu_state) == 0x7FFFFFFF * 2
 
 
+# ==================== VMAC tests ====================
+
+class TestVMAC:
+    """NPU.VMAC: acc += dot(mem_int8[rs1..+n], mem_int8[rs2..+n])."""
+
+    def _write_bytes(self, cpu: CPU, addr: int, values: list[int]) -> None:
+        """Write a list of int8 values to memory as unsigned bytes."""
+        for i, v in enumerate(values):
+            cpu.memory.write8(addr + i, v & 0xFF)
+
+    def test_basic_dot_product(self) -> None:
+        """VMAC: [1,2,3,4] . [5,6,7,8] = 5+12+21+32 = 70."""
+        cpu = _make_cpu()
+        data_base = BASE + 0x1000
+        a_vals = [1, 2, 3, 4]
+        b_vals = [5, 6, 7, 8]
+        self._write_bytes(cpu, data_base, a_vals)
+        self._write_bytes(cpu, data_base + 0x100, b_vals)
+        cpu.registers.write(10, data_base)       # rs1 = addr_a
+        cpu.registers.write(11, data_base + 0x100)  # rs2 = addr_b
+        cpu.registers.write(12, 4)               # rd = count
+        # VMAC: funct7=1, rs2=x11, rs1=x10, funct3=0, rd=x12
+        _exec(cpu, _npu_r(1, 11, 10, 0, 12))
+        assert acc_get64(cpu.npu_state) == 70
+
+    def test_accumulates_without_reset(self) -> None:
+        """VMAC adds to existing accumulator value."""
+        cpu = _make_cpu()
+        data_base = BASE + 0x1000
+        self._write_bytes(cpu, data_base, [10, 20])
+        self._write_bytes(cpu, data_base + 0x100, [3, 4])
+        # Pre-load accumulator with 100
+        acc_set64(cpu.npu_state, 100)
+        cpu.registers.write(10, data_base)
+        cpu.registers.write(11, data_base + 0x100)
+        cpu.registers.write(12, 2)
+        _exec(cpu, _npu_r(1, 11, 10, 0, 12))
+        # 100 + 10*3 + 20*4 = 100 + 30 + 80 = 210
+        assert acc_get64(cpu.npu_state) == 210
+
+    def test_negative_values(self) -> None:
+        """VMAC with signed int8 values: (-1)*2 + (-3)*4 = -2 + -12 = -14."""
+        cpu = _make_cpu()
+        data_base = BASE + 0x1000
+        self._write_bytes(cpu, data_base, [-1, -3])       # 0xFF, 0xFD
+        self._write_bytes(cpu, data_base + 0x100, [2, 4])
+        cpu.registers.write(10, data_base)
+        cpu.registers.write(11, data_base + 0x100)
+        cpu.registers.write(12, 2)
+        _exec(cpu, _npu_r(1, 11, 10, 0, 12))
+        assert acc_get64(cpu.npu_state) == -14
+
+    def test_large_dot_product(self) -> None:
+        """VMAC with 784 elements (MNIST-scale), verify against Python reference."""
+        cpu = _make_cpu()
+        n = 784
+        data_base = BASE + 0x1000
+        addr_a = data_base
+        addr_b = data_base + 0x1000
+        # Generate test data: a[i] = (i*7) % 256 as uint8 -> int8
+        # b[i] = ((i*13 + 50) % 256) as uint8 -> int8
+        expected = 0
+        for i in range(n):
+            a_byte = (i * 7) % 256
+            b_byte = ((i * 13 + 50) % 256)
+            cpu.memory.write8(addr_a + i, a_byte)
+            cpu.memory.write8(addr_b + i, b_byte)
+            a_signed = a_byte - 256 if a_byte >= 128 else a_byte
+            b_signed = b_byte - 256 if b_byte >= 128 else b_byte
+            expected += a_signed * b_signed
+
+        cpu.registers.write(10, addr_a)
+        cpu.registers.write(11, addr_b)
+        cpu.registers.write(12, n)
+        _exec(cpu, _npu_r(1, 11, 10, 0, 12))
+        assert acc_get64(cpu.npu_state) == expected
+
+    def test_zero_length(self) -> None:
+        """VMAC with n=0 does nothing to accumulator."""
+        cpu = _make_cpu()
+        acc_set64(cpu.npu_state, 42)
+        cpu.registers.write(10, BASE + 0x1000)
+        cpu.registers.write(11, BASE + 0x2000)
+        cpu.registers.write(12, 0)
+        _exec(cpu, _npu_r(1, 11, 10, 0, 12))
+        assert acc_get64(cpu.npu_state) == 42
+
+    def test_single_element(self) -> None:
+        """VMAC with n=1, equivalent to scalar MACC on int8 values."""
+        cpu = _make_cpu()
+        data_base = BASE + 0x1000
+        self._write_bytes(cpu, data_base, [7])
+        self._write_bytes(cpu, data_base + 0x100, [9])
+        cpu.registers.write(10, data_base)
+        cpu.registers.write(11, data_base + 0x100)
+        cpu.registers.write(12, 1)
+        _exec(cpu, _npu_r(1, 11, 10, 0, 12))
+        assert acc_get64(cpu.npu_state) == 63
+
+
 # ==================== RELU tests ====================
 
 class TestRELU:

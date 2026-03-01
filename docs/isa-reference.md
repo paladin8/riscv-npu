@@ -147,14 +147,15 @@ Opcode `0x0B` (custom-0 space).
 
 ### R-type compute (opcode 0x0B)
 
-| funct7  | funct3 | name       | op                                           |
-|---------|--------|------------|----------------------------------------------|
-| 0000000 | 000    | NPU.MACC   | {acc_hi,acc_lo} += signed(rs1) × signed(rs2) |
-| 0000000 | 001    | NPU.RELU   | rd = max(signed(rs1), 0)                     |
-| 0000000 | 010    | NPU.QMUL   | rd = (signed(rs1) × signed(rs2)) >> 8        |
-| 0000000 | 011    | NPU.CLAMP  | rd = clamp(signed(rs1), -128, 127)           |
-| 0000000 | 100    | NPU.GELU   | rd = gelu_approx(rs1) via lookup table       |
-| 0000000 | 101    | NPU.RSTACC | rd = acc_lo; acc = 0                         |
+| funct7  | funct3 | name       | op                                                      |
+|---------|--------|------------|---------------------------------------------------------|
+| 0000000 | 000    | NPU.MACC   | {acc_hi,acc_lo} += signed(rs1) × signed(rs2)            |
+| 0000001 | 000    | NPU.VMAC   | acc += dot(mem_int8[rs1..+rd], mem_int8[rs2..+rd])      |
+| 0000000 | 001    | NPU.RELU   | rd = max(signed(rs1), 0)                                |
+| 0000000 | 010    | NPU.QMUL   | rd = (signed(rs1) × signed(rs2)) >> 8                   |
+| 0000000 | 011    | NPU.CLAMP  | rd = clamp(signed(rs1), -128, 127)                      |
+| 0000000 | 100    | NPU.GELU   | rd = gelu_approx(rs1) via lookup table                  |
+| 0000000 | 101    | NPU.RSTACC | rd = acc_lo; acc = 0                                    |
 
 ### I-type data movement (opcode 0x0B)
 

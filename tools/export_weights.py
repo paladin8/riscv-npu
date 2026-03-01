@@ -189,8 +189,16 @@ def quantize_weights(model: MnistMLP) -> dict[str, Any]:
 
     print(f"  w2_scale={w2_scale:.4f}, acc2_scale={acc2_scale:.4f}")
 
+    # --- VMAC bias adjustment for Layer 1 ---
+    # Firmware converts uint8 pixels to signed int8: x_signed = x_uint8 - 128.
+    # To compensate: bias_adjusted[i] = bias[i] + 128 * sum(weights_row[i])
+    w1_row_sums = w1_q.to(torch.int64).sum(dim=1)  # (128,)
+    b1_adjusted = b1_q.to(torch.int64) + 128 * w1_row_sums
+    b1_adjusted = b1_adjusted.to(torch.int32)
+    print(f"  VMAC bias adjustment: max delta = {(128 * w1_row_sums).abs().max().item()}")
+
     return {
-        "w1": w1_q.numpy(), "b1": b1_q.numpy(), "shift1": shift1,
+        "w1": w1_q.numpy(), "b1": b1_adjusted.numpy(), "shift1": shift1,
         "w2": w2_q.numpy(), "b2": b2_q.numpy(),
         "w1_scale": w1_scale,
         "w2_scale": w2_scale,
@@ -208,23 +216,27 @@ def quantized_inference_python(
     """Run quantized inference in pure Python/numpy matching firmware behavior.
 
     This exactly mirrors what the firmware does:
-    Layer 1: MACC(pixel, weight) -> RSTACC -> add bias -> SRA shift1 -> CLAMP -> RELU
-    Layer 2: MACC(hidden, weight) -> RSTACC -> add bias -> argmax (raw int32)
+    Layer 1: convert uint8 to int8 (subtract 128), VMAC(signed_pixel, weight)
+             -> RSTACC -> add adjusted bias -> SRA shift1 -> CLAMP -> RELU
+    Layer 2: VMAC(hidden, weight) -> RSTACC -> add bias -> argmax (raw int32)
+
+    Biases for layer 1 are pre-adjusted: b1[i] += 128 * sum(w1[i])
 
     Args:
         image_uint8: Input image as uint8 array of 784 elements (pixel values 0-255).
-        w1, b1, shift1: Layer 1 weights (128,784), biases (128,), right shift amount.
+        w1, b1, shift1: Layer 1 weights (128,784), adjusted biases (128,), right shift.
         w2, b2: Layer 2 weights (10,128), biases (10,).
 
     Returns:
         Predicted digit 0-9.
     """
-    pixels = image_uint8.astype(np.int64)
+    # Convert uint8 pixels to signed int8 (subtract 128)
+    pixels_signed = image_uint8.astype(np.int64) - 128
 
-    # Layer 1: hidden = relu(clamp(sra(W1 @ pixels + b1, shift1)))
+    # Layer 1: hidden = relu(clamp(sra(W1 @ pixels_signed + b1_adjusted, shift1)))
     hidden = np.zeros(128, dtype=np.int64)
     for i in range(128):
-        acc = int(np.dot(w1[i].astype(np.int64), pixels)) + int(b1[i])
+        acc = int(np.dot(w1[i].astype(np.int64), pixels_signed)) + int(b1[i])
         acc = acc >> shift1  # Arithmetic right shift
         acc = max(-128, min(127, acc))  # CLAMP
         acc = max(0, acc)  # RELU

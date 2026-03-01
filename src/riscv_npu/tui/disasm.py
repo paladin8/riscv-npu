@@ -246,8 +246,10 @@ def _disasm_npu(inst: Instruction) -> str:
     """Disassemble an NPU instruction (opcode 0x0B)."""
     name = _NPU_MNEMONICS.get(inst.funct3, f"NPU?{inst.funct3}")
     f3 = inst.funct3
-    if f3 == 0b000:  # MACC: no rd
-        return f"{name} {_reg(inst.rs1)}, {_reg(inst.rs2)}"
+    if f3 == 0b000:
+        if inst.funct7 == 1:  # VMAC: rd=count, rs1=addr_a, rs2=addr_b
+            return f"NPU.VMAC {_reg(inst.rd)}, {_reg(inst.rs1)}, {_reg(inst.rs2)}"
+        return f"{name} {_reg(inst.rs1)}, {_reg(inst.rs2)}"  # MACC: no rd
     elif f3 in (0b001, 0b011, 0b100):  # RELU, CLAMP, GELU: rd, rs1
         return f"{name} {_reg(inst.rd)}, {_reg(inst.rs1)}"
     elif f3 == 0b010:  # QMUL: rd, rs1, rs2

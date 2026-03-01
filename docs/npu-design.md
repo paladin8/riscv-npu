@@ -1,6 +1,6 @@
 # NPU Design
 
-The Neural Processing Unit (NPU) is a custom coprocessor embedded in the RISC-V pipeline. It adds 8 instructions under opcode `0x0B` (the RISC-V custom-0 encoding space) that accelerate quantized int8 neural network inference.
+The Neural Processing Unit (NPU) is a custom coprocessor embedded in the RISC-V pipeline. It adds 9 instructions under opcode `0x0B` (the RISC-V custom-0 encoding space) that accelerate quantized int8 neural network inference.
 
 ## Motivation
 
@@ -8,7 +8,7 @@ Neural network inference on a bare RV32IM core requires many general-purpose ins
 
 | Bottleneck               | Without NPU                                            | With NPU            |
 |--------------------------|--------------------------------------------------------|---------------------|
-| Dot product (N elements) | N multiplies + N adds + bookkeeping                    | N × MACC + RSTACC   |
+| Dot product (N elements) | N multiplies + N adds + bookkeeping                    | 1 × VMAC + RSTACC   |
 | ReLU activation          | branch + move                                          | RELU                |
 | GELU activation          | floating-point approximation (not available on RV32IM) | GELU (table lookup) |
 | Quantized multiply       | multiply + shift + sign handling                       | QMUL                |
@@ -23,7 +23,7 @@ The NPU has internal state separate from the RISC-V register file:
 Vector registers:     vreg[0..3], each 4 × int8 (-128..127)
 ```
 
-- The **accumulator** is a 64-bit signed register used by MACC/RSTACC. It prevents overflow during long multiply-accumulate chains (e.g., a 256-element dot product).
+- The **accumulator** is a 64-bit signed register used by MACC/VMAC/RSTACC. It prevents overflow during long multiply-accumulate chains (e.g., a 784-element dot product).
 - The **vector registers** hold packed int8 quartets for bulk load/store between memory and the NPU. They enable efficient weight/activation transfer in later phases (DMA-style).
 
 NPU state is initialized to zero and persists across instructions. It is *not* saved/restored by ECALL or MRET (there is no NPU context-switch support).
@@ -51,7 +51,28 @@ Syntax: NPU.MACC rs1, rs2
 
 Multiplies two signed 32-bit register values, producing a 64-bit product, and adds it to the 64-bit accumulator. The `rd` field is ignored (convention: x0). No general-purpose register is written.
 
-**Use case**: Inner loop of matrix multiply / dot product. Accumulate N products without overflow risk, then read the result with RSTACC.
+**Use case**: Scalar multiply-accumulate for small or irregular dot products.
+
+### NPU.VMAC — Vector Multiply-Accumulate
+
+```
+funct3 = 000, funct7 = 0000001    Format: R-type
+Syntax: NPU.VMAC rd, rs1, rs2
+```
+
+```
+n = regs[rd]
+for i in 0..n-1:
+    a = sign_extend_8(mem[regs[rs1] + i])
+    b = sign_extend_8(mem[regs[rs2] + i])
+    {acc_hi, acc_lo} += a * b
+```
+
+Reads `n` (from rd) pairs of signed int8 bytes from memory at addresses `rs1` and `rs2`, multiplies each pair, and adds all products to the 64-bit accumulator. Does **not** reset the accumulator, allowing chaining or bias pre-loading.
+
+Both arrays are treated as signed int8. For unsigned uint8 inputs (e.g., pixel values), the caller should pre-convert to signed and adjust biases: `bias' = bias + 128 * sum(weights_row)`.
+
+**Use case**: Entire dot product in one instruction. Replaces the scalar MACC loop, reducing a 784-iteration inner loop from ~3,920 instructions to ~5.
 
 ### NPU.RELU — Rectified Linear Unit
 
@@ -190,14 +211,15 @@ int32_t c = NPU_CLAMP(wide_val);
 
 Available macros/functions:
 
-| Intrinsic        | Signature                            | Instruction |
-|------------------|--------------------------------------|-------------|
-| `NPU_MACC(a, b)` | macro, no return                     | NPU.MACC    |
-| `NPU_RSTACC()`   | `int32_t NPU_RSTACC(void)`           | NPU.RSTACC  |
-| `NPU_RELU(src)`  | `int32_t NPU_RELU(int32_t)`          | NPU.RELU    |
-| `NPU_GELU(src)`  | `int32_t NPU_GELU(int32_t)`          | NPU.GELU    |
-| `NPU_QMUL(a, b)` | `int32_t NPU_QMUL(int32_t, int32_t)` | NPU.QMUL    |
-| `NPU_CLAMP(src)` | `int32_t NPU_CLAMP(int32_t)`         | NPU.CLAMP   |
+| Intrinsic                   | Signature                            | Instruction |
+|-----------------------------|--------------------------------------|-------------|
+| `NPU_MACC(a, b)`            | macro, no return                     | NPU.MACC    |
+| `NPU_VMAC(a, b, n)`         | macro, no return                     | NPU.VMAC    |
+| `NPU_RSTACC()`              | `int32_t NPU_RSTACC(void)`           | NPU.RSTACC  |
+| `NPU_RELU(src)`             | `int32_t NPU_RELU(int32_t)`          | NPU.RELU    |
+| `NPU_GELU(src)`             | `int32_t NPU_GELU(int32_t)`          | NPU.GELU    |
+| `NPU_QMUL(a, b)`            | `int32_t NPU_QMUL(int32_t, int32_t)` | NPU.QMUL    |
+| `NPU_CLAMP(src)`            | `int32_t NPU_CLAMP(int32_t)`         | NPU.CLAMP   |
 
 LDVEC/STVEC do not have C intrinsics yet (planned for vectorized firmware in later phases).
 
@@ -207,11 +229,10 @@ A quantized linear layer `y = relu(W @ x + b)` using NPU instructions:
 
 ```
 for each output neuron i:
-    for each input j:
-        NPU_MACC(W[i][j], x[j])    // accumulate dot product
+    NPU_VMAC(&W[i][0], &x[0], N)   // entire dot product in one instruction
     sum = NPU_RSTACC()             // read result, reset for next neuron
     sum = sum + bias[i]            // add bias (plain ADD)
-    sum = NPU_QMUL(sum, scale)     // re-quantize
+    sum = sum >> shift             // re-quantize (arithmetic right shift)
     sum = NPU_CLAMP(sum)           // clamp to int8
     y[i] = NPU_RELU(sum)           // activation
 ```

@@ -1,8 +1,11 @@
 /* Neural network runtime for quantized int8 inference using NPU instructions.
  *
- * Uses NPU_MACC for dot products and NPU_RSTACC to read/clear the accumulator.
- * NPU_CLAMP is used for int8 clamping after rescaling.
- * NPU_RELU is used for ReLU activation.
+ * Uses NPU_VMAC for vectorized dot products, NPU_RSTACC to read/clear
+ * the accumulator, NPU_CLAMP for int8 clamping, NPU_RELU for activation.
+ *
+ * Layer 1 (uint8 input): converts pixels to signed int8 (subtract 128)
+ * before VMAC. Biases are pre-adjusted at export time to compensate:
+ *   bias_adjusted[i] = bias[i] + 128 * sum(weights_row[i])
  */
 
 #include "nn_runtime.h"
@@ -13,17 +16,21 @@ void linear_relu(const uint8_t *input, const int8_t *weights,
                  const int32_t *bias, int32_t shift,
                  int out_dim, int in_dim, int8_t *output)
 {
+    /* Convert uint8 input to signed int8 (subtract 128) */
+    int8_t input_signed[784];
+    for (int j = 0; j < in_dim; j++) {
+        input_signed[j] = (int8_t)(input[j] - 128);
+    }
+
     for (int i = 0; i < out_dim; i++) {
         /* Clear accumulator */
         NPU_RSTACC();
 
-        /* Multiply-accumulate: acc += input[j] * weights[i*in_dim+j] */
+        /* Vectorized dot product: acc += input_signed . weights_row */
         const int8_t *row = &weights[i * in_dim];
-        for (int j = 0; j < in_dim; j++) {
-            NPU_MACC((int32_t)input[j], (int32_t)row[j]);
-        }
+        NPU_VMAC(input_signed, row, in_dim);
 
-        /* Read accumulator and add bias */
+        /* Read accumulator and add pre-adjusted bias */
         int32_t acc = NPU_RSTACC();
         acc += bias[i];
 
@@ -48,11 +55,9 @@ void linear_raw(const int8_t *input, const int8_t *weights,
         /* Clear accumulator */
         NPU_RSTACC();
 
-        /* Multiply-accumulate */
+        /* Vectorized dot product: acc += input . weights_row */
         const int8_t *row = &weights[i * in_dim];
-        for (int j = 0; j < in_dim; j++) {
-            NPU_MACC((int32_t)input[j], (int32_t)row[j]);
-        }
+        NPU_VMAC(input, row, in_dim);
 
         /* Read accumulator and add bias */
         int32_t acc = NPU_RSTACC();
