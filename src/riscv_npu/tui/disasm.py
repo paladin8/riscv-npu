@@ -20,6 +20,13 @@ from ..cpu.decode import (
     OP_SYSTEM,
     OP_FENCE,
     OP_NPU,
+    OP_LOAD_FP,
+    OP_STORE_FP,
+    OP_FMADD,
+    OP_FMSUB,
+    OP_FNMSUB,
+    OP_FNMADD,
+    OP_OP_FP,
 )
 from ..memory.bus import MemoryBus
 
@@ -119,9 +126,24 @@ _NPU_MNEMONICS: dict[int, str] = {
 }
 
 
+# Float ABI register names for disassembly
+_FLOAT_ABI: list[str] = [
+    "ft0", "ft1", "ft2", "ft3", "ft4", "ft5", "ft6", "ft7",
+    "fs0", "fs1",
+    "fa0", "fa1", "fa2", "fa3", "fa4", "fa5", "fa6", "fa7",
+    "fs2", "fs3", "fs4", "fs5", "fs6", "fs7", "fs8", "fs9", "fs10", "fs11",
+    "ft8", "ft9", "ft10", "ft11",
+]
+
+
 def _reg(index: int) -> str:
     """Format a register reference as 'x<N>'."""
     return f"x{index}"
+
+
+def _freg(index: int) -> str:
+    """Format a float register reference with ABI name."""
+    return _FLOAT_ABI[index]
 
 
 def _imm_signed(imm: int) -> int:
@@ -162,6 +184,14 @@ def disassemble_instruction(inst: Instruction) -> str:
         return _disasm_npu(inst)
     elif inst.opcode == OP_FENCE:
         return "FENCE"
+    elif inst.opcode == OP_LOAD_FP:
+        return _disasm_flw(inst)
+    elif inst.opcode == OP_STORE_FP:
+        return _disasm_fsw(inst)
+    elif inst.opcode in (OP_FMADD, OP_FMSUB, OP_FNMSUB, OP_FNMADD):
+        return _disasm_fma(inst)
+    elif inst.opcode == OP_OP_FP:
+        return _disasm_op_fp(inst)
     else:
         return f"UNKNOWN (opcode=0x{inst.opcode:02X})"
 
@@ -296,6 +326,113 @@ def _disasm_npu_f3_0(inst: Instruction) -> str:
         return f"{name} {_reg(inst.rd)}, {_reg(inst.rs1)}, {_reg(inst.rs2)}"
     else:
         return name
+
+
+# OP-FP mnemonics: funct7 -> name (for simple R-type floats)
+_OP_FP_MNEMONICS: dict[int, str] = {
+    0x00: "fadd.s",
+    0x04: "fsub.s",
+    0x08: "fmul.s",
+    0x0C: "fdiv.s",
+    0x2C: "fsqrt.s",
+}
+
+# Sign injection mnemonics: funct3 -> name
+_FSGNJ_MNEMONICS: dict[int, str] = {
+    0: "fsgnj.s",
+    1: "fsgnjn.s",
+    2: "fsgnjx.s",
+}
+
+# Compare mnemonics: funct3 -> name
+_FCMP_MNEMONICS: dict[int, str] = {
+    0: "fle.s",
+    1: "flt.s",
+    2: "feq.s",
+}
+
+# Fused multiply-add mnemonics: opcode -> name
+_FMA_MNEMONICS: dict[int, str] = {
+    OP_FMADD: "fmadd.s",
+    OP_FMSUB: "fmsub.s",
+    OP_FNMSUB: "fnmsub.s",
+    OP_FNMADD: "fnmadd.s",
+}
+
+
+def _disasm_flw(inst: Instruction) -> str:
+    """Disassemble FLW instruction."""
+    offset = _imm_signed(inst.imm)
+    return f"flw {_freg(inst.rd)}, {offset}({_reg(inst.rs1)})"
+
+
+def _disasm_fsw(inst: Instruction) -> str:
+    """Disassemble FSW instruction."""
+    offset = _imm_signed(inst.imm)
+    return f"fsw {_freg(inst.rs2)}, {offset}({_reg(inst.rs1)})"
+
+
+def _disasm_fma(inst: Instruction) -> str:
+    """Disassemble R4-type fused multiply-add instructions."""
+    name = _FMA_MNEMONICS.get(inst.opcode, f"fma?0x{inst.opcode:02X}")
+    return f"{name} {_freg(inst.rd)}, {_freg(inst.rs1)}, {_freg(inst.rs2)}, {_freg(inst.rs3)}"
+
+
+def _disasm_op_fp(inst: Instruction) -> str:
+    """Disassemble OP-FP instructions (opcode 0x53)."""
+    f7 = inst.funct7
+    f3 = inst.funct3
+
+    # Simple arithmetic (fadd, fsub, fmul, fdiv)
+    if f7 in _OP_FP_MNEMONICS and f7 != 0x2C:
+        name = _OP_FP_MNEMONICS[f7]
+        return f"{name} {_freg(inst.rd)}, {_freg(inst.rs1)}, {_freg(inst.rs2)}"
+
+    # fsqrt.s (only rs1)
+    if f7 == 0x2C:
+        return f"fsqrt.s {_freg(inst.rd)}, {_freg(inst.rs1)}"
+
+    # Sign injection
+    if f7 == 0x10:
+        name = _FSGNJ_MNEMONICS.get(f3, f"fsgnj?{f3}")
+        return f"{name} {_freg(inst.rd)}, {_freg(inst.rs1)}, {_freg(inst.rs2)}"
+
+    # Min/max
+    if f7 == 0x14:
+        name = "fmin.s" if f3 == 0 else "fmax.s"
+        return f"{name} {_freg(inst.rd)}, {_freg(inst.rs1)}, {_freg(inst.rs2)}"
+
+    # Compare (result to int reg)
+    if f7 == 0x50:
+        name = _FCMP_MNEMONICS.get(f3, f"fcmp?{f3}")
+        return f"{name} {_reg(inst.rd)}, {_freg(inst.rs1)}, {_freg(inst.rs2)}"
+
+    # Convert float->int
+    if f7 == 0x60:
+        if inst.rs2 == 0:
+            return f"fcvt.w.s {_reg(inst.rd)}, {_freg(inst.rs1)}"
+        else:
+            return f"fcvt.wu.s {_reg(inst.rd)}, {_freg(inst.rs1)}"
+
+    # Convert int->float
+    if f7 == 0x68:
+        if inst.rs2 == 0:
+            return f"fcvt.s.w {_freg(inst.rd)}, {_reg(inst.rs1)}"
+        else:
+            return f"fcvt.s.wu {_freg(inst.rd)}, {_reg(inst.rs1)}"
+
+    # FMV.X.W / FCLASS.S
+    if f7 == 0x70:
+        if f3 == 0:
+            return f"fmv.x.w {_reg(inst.rd)}, {_freg(inst.rs1)}"
+        elif f3 == 1:
+            return f"fclass.s {_reg(inst.rd)}, {_freg(inst.rs1)}"
+
+    # FMV.W.X
+    if f7 == 0x78:
+        return f"fmv.w.x {_freg(inst.rd)}, {_reg(inst.rs1)}"
+
+    return f"OP-FP? (funct7=0x{f7:02X}, funct3={f3})"
 
 
 def disassemble_region(

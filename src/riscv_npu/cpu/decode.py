@@ -22,6 +22,7 @@ class Instruction:
     rd: int = 0
     rs1: int = 0
     rs2: int = 0
+    rs3: int = 0
     imm: int = 0
     funct3: int = 0
     funct7: int = 0
@@ -40,6 +41,13 @@ OP_JALR = 0x67
 OP_SYSTEM = 0x73
 OP_FENCE = 0x0F
 OP_NPU = 0x0B
+OP_LOAD_FP = 0x07
+OP_STORE_FP = 0x27
+OP_FMADD = 0x43
+OP_FMSUB = 0x47
+OP_FNMSUB = 0x4B
+OP_FNMADD = 0x4F
+OP_OP_FP = 0x53
 
 
 def decode(word: int) -> Instruction:
@@ -112,6 +120,29 @@ def decode(word: int) -> Instruction:
             21,
         )
         return Instruction(opcode=opcode, rd=rd, imm=imm)
+
+    elif opcode == OP_LOAD_FP:
+        # FLW: I-type (same layout as integer loads)
+        imm = sign_extend(word >> 20, 12)
+        return Instruction(opcode=opcode, rd=rd, rs1=rs1, imm=imm,
+                           funct3=funct3, funct7=funct7)
+
+    elif opcode == OP_STORE_FP:
+        # FSW: S-type (same layout as integer stores)
+        imm = sign_extend((funct7 << 5) | rd, 12)
+        return Instruction(opcode=opcode, rs1=rs1, rs2=rs2, imm=imm,
+                           funct3=funct3, funct7=funct7)
+
+    elif opcode in (OP_FMADD, OP_FMSUB, OP_FNMSUB, OP_FNMADD):
+        # R4-type: rs3 in bits[31:27], fmt in bits[26:25]
+        rs3 = (word >> 27) & 0x1F
+        return Instruction(opcode=opcode, rd=rd, rs1=rs1, rs2=rs2, rs3=rs3,
+                           funct3=funct3, funct7=funct7)
+
+    elif opcode == OP_OP_FP:
+        # R-type floating-point (FADD.S, FSUB.S, etc.)
+        return Instruction(opcode=opcode, rd=rd, rs1=rs1, rs2=rs2,
+                           funct3=funct3, funct7=funct7)
 
     else:
         raise ValueError(f"Unknown opcode: 0x{opcode:02X} (word=0x{word:08X})")

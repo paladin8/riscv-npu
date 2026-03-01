@@ -20,11 +20,19 @@ from .decode import (
     OP_SYSTEM,
     OP_FENCE,
     OP_NPU,
+    OP_LOAD_FP,
+    OP_STORE_FP,
+    OP_FMADD,
+    OP_FMSUB,
+    OP_FNMSUB,
+    OP_FNMADD,
+    OP_OP_FP,
 )
 
 from .registers import RegisterFile
 from ..memory.bus import MemoryBus
 from ..npu.instructions import execute_npu
+from .fpu_execute import execute_fpu
 
 if TYPE_CHECKING:
     from .cpu import CPU
@@ -76,6 +84,12 @@ def execute(inst: Instruction, cpu: CPU) -> int:
 
     elif inst.opcode == OP_NPU:
         return execute_npu(inst, cpu)
+
+    elif inst.opcode in (
+        OP_LOAD_FP, OP_STORE_FP, OP_FMADD, OP_FMSUB,
+        OP_FNMSUB, OP_FNMADD, OP_OP_FP,
+    ):
+        return execute_fpu(inst, cpu)
 
     else:
         raise ValueError(f"Unimplemented opcode: 0x{inst.opcode:02X}")

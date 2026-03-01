@@ -8,6 +8,7 @@ from ..memory.bus import MemoryBus
 from ..npu.engine import NpuState
 from .decode import decode
 from .execute import execute
+from .fpu import CSR_FCSR, CSR_FFLAGS, CSR_FRM, FpuState
 from .registers import RegisterFile
 
 if TYPE_CHECKING:
@@ -41,6 +42,7 @@ class CPU:
         self.tohost: int = 0
         self.tohost_addr: int = 0  # Memory-mapped tohost address (set by test runner)
         self.npu_state = NpuState()
+        self.fpu_state = FpuState()
         self.syscall_handler: SyscallHandler | None = None
         self.csrs: dict[int, int] = {
             CSR_MHARTID: 0,  # Hart 0
@@ -50,15 +52,27 @@ class CPU:
         """Read a CSR value. Unknown CSRs return 0."""
         if addr == CSR_TOHOST:
             return self.tohost
+        if addr == CSR_FFLAGS:
+            return self.fpu_state.fflags
+        if addr == CSR_FRM:
+            return self.fpu_state.frm
+        if addr == CSR_FCSR:
+            return self.fpu_state.fcsr & 0xFF
         return self.csrs.get(addr, 0)
 
     def csr_write(self, addr: int, value: int) -> None:
-        """Write a CSR value. Handles tohost specially."""
+        """Write a CSR value. Handles tohost and FPU CSRs specially."""
         value = value & 0xFFFFFFFF
         if addr == CSR_TOHOST:
             self.tohost = value
             if value != 0:
                 self.halted = True
+        elif addr == CSR_FFLAGS:
+            self.fpu_state.fflags = value & 0x1F
+        elif addr == CSR_FRM:
+            self.fpu_state.frm = value & 0x7
+        elif addr == CSR_FCSR:
+            self.fpu_state.fcsr = value & 0xFF
         else:
             self.csrs[addr] = value
 

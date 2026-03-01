@@ -21,7 +21,7 @@ from .debugger import DebuggerState, process_command
 from .disasm import disassemble_region
 from .memory import format_hex_dump
 from .npu import format_npu_state
-from .registers import format_registers
+from .registers import format_float_registers, format_registers
 
 # System constants (match cli.py)
 _BASE = 0x80000000
@@ -35,7 +35,9 @@ def render_debugger(state: DebuggerState) -> Layout:
     Layout structure:
         +------------------+------------------+
         |   Registers      |                  |
-        +------------------+   Disassembly    |
+        +------------------+                  |
+        |   FPU Registers  |   Disassembly    |
+        +------------------+                  |
         |   NPU            |                  |
         +------------------+------------------+
         |   Memory         |   Output (UART)  |
@@ -70,6 +72,7 @@ def render_debugger(state: DebuggerState) -> Layout:
 
     layout["left_col"].split_column(
         Layout(name="registers", ratio=2),
+        Layout(name="fpu", ratio=2),
         Layout(name="npu", ratio=1),
     )
 
@@ -81,6 +84,10 @@ def render_debugger(state: DebuggerState) -> Layout:
     # Registers panel
     reg_text = format_registers(state.cpu.registers, state.prev_regs)
     layout["registers"].update(Panel(reg_text, title="Registers"))
+
+    # FPU panel
+    fpu_text = format_float_registers(state.cpu.fpu_state, state.prev_fregs)
+    layout["fpu"].update(Panel(fpu_text, title="FPU Registers"))
 
     # NPU panel
     npu_text = format_npu_state(state.cpu.npu_state)

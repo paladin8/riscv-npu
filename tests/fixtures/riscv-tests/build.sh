@@ -7,8 +7,8 @@
 #
 # Usage: ./build.sh
 #
-# This script clones the riscv-tests repo, builds rv32ui-p-* and rv32um-p-*
-# test binaries, and copies them to this directory.
+# This script clones the riscv-tests repo, builds rv32ui-p-*, rv32um-p-*,
+# and rv32uf-p-* test binaries, and copies them to this directory.
 
 set -euo pipefail
 
@@ -33,9 +33,16 @@ for t in $RV32UM_TESTS; do
     make XLEN=32 "rv32um-p-$t"
 done
 
+echo "Building rv32uf-p-* tests..."
+RV32UF_TESTS="fadd fdiv fclass fcmp fcvt fcvt_w fmadd fmin ldst move recoding"
+for t in $RV32UF_TESTS; do
+    make XLEN=32 "rv32uf-p-$t"
+done
+
 echo "Copying binaries to $SCRIPT_DIR..."
 cp rv32ui-p-* "$SCRIPT_DIR/" 2>/dev/null || true
 cp rv32um-p-* "$SCRIPT_DIR/" 2>/dev/null || true
+cp rv32uf-p-* "$SCRIPT_DIR/" 2>/dev/null || true
 # Remove dump files if any
 rm -f "$SCRIPT_DIR"/*.dump
 
@@ -43,5 +50,5 @@ echo "Cleaning up..."
 rm -rf "$BUILD_DIR"
 
 echo "Done. Test binaries are in $SCRIPT_DIR/"
-ls "$SCRIPT_DIR"/rv32ui-p-* "$SCRIPT_DIR"/rv32um-p-* 2>/dev/null | wc -l
+ls "$SCRIPT_DIR"/rv32ui-p-* "$SCRIPT_DIR"/rv32um-p-* "$SCRIPT_DIR"/rv32uf-p-* 2>/dev/null | wc -l
 echo "test binaries available."

@@ -8,7 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from ..cpu.cpu import CPU
-from .registers import snapshot_registers
+from .registers import snapshot_float_registers, snapshot_registers
 
 
 @dataclass
@@ -22,6 +22,7 @@ class DebuggerState:
     cpu: CPU
     breakpoints: set[int] = field(default_factory=set)
     prev_regs: list[int] = field(default_factory=lambda: [0] * 32)
+    prev_fregs: list[int] = field(default_factory=lambda: [0] * 32)
     mem_view_addr: int = 0x80000000
     uart_capture: io.BytesIO = field(default_factory=io.BytesIO)
     running: bool = False
@@ -43,6 +44,7 @@ def debugger_step(state: DebuggerState) -> None:
         return
 
     state.prev_regs = snapshot_registers(state.cpu.registers)
+    state.prev_fregs = snapshot_float_registers(state.cpu.fpu_state)
     state.cpu.step()
     state.message = f"Stepped to 0x{state.cpu.pc:08X} (cycle {state.cpu.cycle_count})"
 
@@ -62,6 +64,7 @@ def debugger_continue(state: DebuggerState, max_cycles: int = 10000) -> None:
         return
 
     state.prev_regs = snapshot_registers(state.cpu.registers)
+    state.prev_fregs = snapshot_float_registers(state.cpu.fpu_state)
     cycles_run = 0
 
     while not state.cpu.halted and cycles_run < max_cycles:
@@ -112,6 +115,7 @@ def debugger_run_at_speed(
         while True:
             frame_start = time.monotonic()
             state.prev_regs = snapshot_registers(state.cpu.registers)
+            state.prev_fregs = snapshot_float_registers(state.cpu.fpu_state)
 
             for _ in range(steps_per_frame):
                 if state.cpu.halted:

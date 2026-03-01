@@ -1,37 +1,33 @@
 # Project State
 
 ## Status
-Phase 7 COMPLETE (transformer). 633 passing, 2 skipped. Restructured tools/ into src/riscv_npu/tools/. Quantized transformer has ~22% float/quant top-1 agreement — int8 quantization scheme fundamentally clips in linear layers (MAC overflow after shift). Considering adding RV32F (float extension) to eliminate quantization entirely.
+Phase 8 (RV32F) COMPLETE. 755 passing, 2 skipped. All 11 rv32uf compliance tests pass.
 
 ## What's implemented
-- RV32IM: all 49 instructions (41 base + 8 M extension)
+- RV32IMF: 75 instructions (41 base + 8 M extension + 26 F extension)
+- RV32F: full single-precision float — 32 float registers, FCSR/FFLAGS/FRM CSR routing
+  - Arithmetic: FADD.S, FSUB.S, FMUL.S, FDIV.S, FSQRT.S
+  - FMA: FMADD.S, FMSUB.S, FNMSUB.S, FNMADD.S
+  - Compare: FEQ.S, FLT.S, FLE.S
+  - Convert: FCVT.W.S, FCVT.WU.S, FCVT.S.W, FCVT.S.WU
+  - Move: FMV.X.W, FMV.W.X, FCLASS.S
+  - Sign injection: FSGNJ.S, FSGNJN.S, FSGNJX.S
+  - Min/Max: FMIN.S, FMAX.S
+  - Load/Store: FLW, FSW
 - ELF loader, CSR shim, machine-mode traps, MemoryBus, UART, SyscallHandler
-- CLI: run + debug subcommands; TUI debugger with NPU panel
+- CLI: run + debug subcommands; TUI debugger with FPU + NPU panels
 - NPU: 14 custom instructions (opcode 0x0B), NpuState (64-bit acc + 4 vregs)
-  - Phase 6: MACC, VMAC, RELU, QMUL, CLAMP, GELU, RSTACC, LDVEC, STVEC
-  - Phase 7: VEXP, VRSQRT, VMUL, VREDUCE, VMAX (Q16.16 fixed-point)
 - Firmware: fibonacci, sort, hello, uart-hello, npu_test, mnist, transformer
-- MNIST: quantized 784->128(ReLU)->10 MLP, ~99% accuracy
-- Transformer: char-level LM (dim=64, heads=4, layers=2, vocab=256, ctx=32)
-  - QAT training with custom MultiHeadAttention, activation fake-quantization
-  - Calibration-based bias scaling for activation magnitudes
-  - Softmax Q16.16 bug fixed (scores must << 16 before exp)
 
 ## Key paths
+- src/riscv_npu/cpu/fpu.py — FRegisterFile, FpuState (CSR routing)
+- src/riscv_npu/cpu/fpu_execute.py — 26 F-extension instruction execution
 - src/riscv_npu/tools/ — weight exporters, assembler, transformer reference
 - src/riscv_npu/npu/ — NPU instruction execution + compute engine
-- tests/tools/ — transformer reference tests
-- firmware/transformer/main.c — C firmware using NPU instructions
 
 ## Key patterns
 - NPU: opcode 0x0B, funct3 selects group, funct7 sub-dispatch for funct3=0
-- Q16.16 fixed-point: 1.0 = 65536
-- Power-of-2 quantization scales (scale = 2^shift) for exact shift cancellation
-- Toolchain: riscv64-unknown-elf-gcc -march=rv32im -mabi=ilp32
-- torch in optional deps (uv run --extra torch)
-
-## Quantization lessons learned
-- Single-shift linear layers clip badly: MAC = dim * max(W) * max(x) >> w_shift overflows int8
-- Bias must be scaled by weight_scale * activation_scale (not just weight_scale)
-- QAT with per-tensor fake-quant doesn't match firmware's integer arithmetic
-- RV32F extension would eliminate all quantization issues for transformer
+- FPU: IEEE 754 bits via struct.pack/unpack, canonical NaN = 0x7FC00000
+- Inexact detection: compare double-precision result vs single-precision roundtrip
+- NaN handling: sNaN sets NV, any-NaN result -> canonical NaN
+- Toolchain: riscv64-unknown-elf-gcc -march=rv32imf -mabi=ilp32f (or rv32im for int-only)
