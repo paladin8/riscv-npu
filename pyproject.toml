@@ -10,6 +10,7 @@ dependencies = [
 [project.optional-dependencies]
 torch = [
     "torch",
+    "torchvision",
 ]
 
 [dependency-groups]
