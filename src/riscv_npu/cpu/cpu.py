@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ..memory.bus import MemoryBus
+from ..npu.engine import NpuState
 from .decode import decode
 from .execute import execute
 from .registers import RegisterFile
@@ -39,6 +40,7 @@ class CPU:
         self.cycle_count: int = 0
         self.tohost: int = 0
         self.tohost_addr: int = 0  # Memory-mapped tohost address (set by test runner)
+        self.npu_state = NpuState()
         self.syscall_handler: SyscallHandler | None = None
         self.csrs: dict[int, int] = {
             CSR_MHARTID: 0,  # Hart 0

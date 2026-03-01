@@ -39,6 +39,7 @@ OP_JAL = 0x6F
 OP_JALR = 0x67
 OP_SYSTEM = 0x73
 OP_FENCE = 0x0F
+OP_NPU = 0x0B
 
 
 def decode(word: int) -> Instruction:
@@ -54,6 +55,23 @@ def decode(word: int) -> Instruction:
         # R-type: no immediate
         return Instruction(opcode=opcode, rd=rd, rs1=rs1, rs2=rs2,
                            funct3=funct3, funct7=funct7)
+
+    elif opcode == OP_NPU:
+        # Custom NPU instructions (opcode 0x0B)
+        # funct3 0-5: R-type compute (rd, rs1, rs2)
+        # funct3 6: LDVEC - I-type (rd, rs1, imm)
+        # funct3 7: STVEC - S-type like (rs1, rs2, imm)
+        if funct3 <= 5:
+            return Instruction(opcode=opcode, rd=rd, rs1=rs1, rs2=rs2,
+                               funct3=funct3, funct7=funct7)
+        elif funct3 == 6:  # LDVEC: I-type
+            imm = sign_extend(word >> 20, 12)
+            return Instruction(opcode=opcode, rd=rd, rs1=rs1, imm=imm,
+                               funct3=funct3, funct7=funct7)
+        else:  # funct3 == 7, STVEC: S-type
+            imm = sign_extend((funct7 << 5) | rd, 12)
+            return Instruction(opcode=opcode, rs1=rs1, rs2=rs2, imm=imm,
+                               funct3=funct3, funct7=funct7)
 
     elif opcode in (OP_I_ARITH, OP_LOAD, OP_JALR, OP_SYSTEM, OP_FENCE):
         # I-type: imm = sign_extend(inst[31:20], 12)

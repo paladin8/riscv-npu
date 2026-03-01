@@ -19,10 +19,12 @@ from .decode import (
     OP_JALR,
     OP_SYSTEM,
     OP_FENCE,
+    OP_NPU,
 )
 
 from .registers import RegisterFile
 from ..memory.bus import MemoryBus
+from ..npu.instructions import execute_npu
 
 if TYPE_CHECKING:
     from .cpu import CPU
@@ -71,6 +73,9 @@ def execute(inst: Instruction, cpu: CPU) -> int:
 
     elif inst.opcode == OP_FENCE:
         return pc + 4
+
+    elif inst.opcode == OP_NPU:
+        return execute_npu(inst, cpu)
 
     else:
         raise ValueError(f"Unimplemented opcode: 0x{inst.opcode:02X}")
