@@ -36,13 +36,15 @@ The debugger displays four panels: registers, disassembly, memory hex dump, and 
 
 ### Debugger commands
 
-| Command                        | Description                          |
-| ------------------------------ | ------------------------------------ |
-| `s` / `step`                   | Execute one instruction              |
-| `c` / `r` / `continue` / `run` | Run until breakpoint or halt         |
-| `b <hex_addr>`                 | Toggle breakpoint (e.g. `b 80000010`)|
-| `g <hex_addr>`                 | Jump memory view to address          |
-| `q` / `quit`                   | Exit debugger                        |
+| Command                  | Description                                     |
+| ------------------------ | ----------------------------------------------- |
+| `s` / `step`             | Execute one instruction                         |
+| `c` / `continue`         | Run until breakpoint or halt                    |
+| `r` / `run <hz> [max]`   | Run at fixed speed with live display (Ctrl+C)   |
+| `b <hex_addr>`           | Toggle breakpoint (e.g. `b 80000010`)           |
+| `g <hex_addr>`           | Jump memory view to address                     |
+| `h` / `help`             | Show command help                               |
+| `q` / `quit`             | Exit debugger                                   |
 
 ## Firmware
 
@@ -58,12 +60,14 @@ This requires a RISC-V cross-compiler. All firmware is compiled with `-march=rv3
 
 ### Example programs
 
-| Program      | Description                                                 |
-| ------------ | ----------------------------------------------------------- |
-| `fibonacci`  | Computes fib(10), returns result in `a0`                    |
-| `hello`      | Prints "Hello, World!" via write syscall                    |
-| `uart-hello` | Prints via direct UART register access (memory-mapped I/O)  |
-| `sort`       | Insertion sort, returns 1 on success                        |
+| Program      | Description                                                      |
+| ------------ | ---------------------------------------------------------------- |
+| `fibonacci`  | Computes fib(10), returns result in `a0`                         |
+| `hello`      | Prints "Hello, World!" via write syscall                         |
+| `uart-hello` | Prints via direct UART register access (memory-mapped I/O)       |
+| `sort`       | Insertion sort, returns 1 on success                             |
+| `npu_test`   | Exercises all NPU instructions (MACC, RELU, QMUL, CLAMP, GELU)   |
+| `mnist`      | Quantized 784->128->10 MLP, classifies handwritten digits       |
 
 ## Testing
 

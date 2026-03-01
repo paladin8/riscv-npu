@@ -13,7 +13,7 @@ from rich.text import Text
 
 from ..cpu.cpu import CPU
 from ..devices.uart import UART, UART_BASE, UART_SIZE
-from ..loader.elf import load_elf, parse_elf
+from ..loader.elf import find_symbol, load_elf, parse_elf
 from ..memory.bus import MemoryBus
 from ..memory.ram import RAM
 from ..syscall.handler import SyscallHandler
@@ -25,8 +25,8 @@ from .registers import format_registers
 
 # System constants (match cli.py)
 _BASE = 0x80000000
-_RAM_SIZE = 1024 * 1024  # 1 MB
-_STACK_TOP = 0x80FFFFF0  # Top of RAM, 16-byte aligned
+_RAM_SIZE = 4 * 1024 * 1024  # 4 MB
+_STACK_TOP = _BASE + _RAM_SIZE - 16  # Top of RAM, 16-byte aligned
 
 
 def render_debugger(state: DebuggerState) -> Layout:
@@ -132,7 +132,9 @@ def render_debugger(state: DebuggerState) -> Layout:
     return layout
 
 
-def run_debugger(elf_path: str) -> None:
+def run_debugger(
+    elf_path: str, writes: list[tuple[str, str]] | None = None,
+) -> None:
     """Launch the TUI debugger for an ELF binary.
 
     Loads the ELF file, creates the CPU/bus/UART/syscall infrastructure,
@@ -140,6 +142,7 @@ def run_debugger(elf_path: str) -> None:
 
     Args:
         elf_path: Path to the ELF file to debug.
+        writes: Optional list of (symbol, file_path) pairs to write into RAM.
     """
     # Set up memory bus, RAM, UART with capture buffer
     bus = MemoryBus()
@@ -161,10 +164,26 @@ def run_debugger(elf_path: str) -> None:
 
     # Set initial program break
     with open(elf_path, "rb") as f:
-        prog = parse_elf(f.read())
+        elf_data = f.read()
+    prog = parse_elf(elf_data)
     if prog.segments:
         end = max(s.vaddr + s.memsz for s in prog.segments)
         handler.brk = (end + 15) & ~15
+
+    # Apply --write arguments
+    if writes:
+        for symbol, file_path in writes:
+            addr = find_symbol(elf_data, symbol)
+            if addr is None:
+                print(f"Error: symbol '{symbol}' not found in ELF")
+                sys.exit(1)
+            with open(file_path, "rb") as f:
+                data = f.read()
+            ram.load_segment(addr, data)
+            print(
+                f"Loaded {len(data)} bytes from {file_path} "
+                f"at {symbol} (0x{addr:08X})"
+            )
 
     # Create debugger state
     state = DebuggerState(
