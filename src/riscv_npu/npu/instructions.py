@@ -64,7 +64,6 @@ def _exec_macc(inst: Instruction, regs: 'RegisterFile', npu: NpuState) -> None:
     Multiplies two signed 32-bit register values and adds the 64-bit
     product to the accumulator.
     """
-    from ..cpu.registers import RegisterFile
     rs1_val = to_signed(regs.read(inst.rs1))
     rs2_val = to_signed(regs.read(inst.rs2))
     product = rs1_val * rs2_val

@@ -1,7 +1,7 @@
 # Project State
 
 ## Status
-Phase 4 COMPLETE. 434 tests passing. Next: Phase 5 (NPU).
+Phase 5 COMPLETE. 512 tests passing. Next: Phase 6 (MNIST).
 
 ## What's implemented
 - RV32IM: all 49 instructions (41 base + 8 M extension)
@@ -12,15 +12,17 @@ Phase 4 COMPLETE. 434 tests passing. Next: Phase 5 (NPU).
 - SyscallHandler: write(64), read(63), exit(93), brk(214) via ECALL dispatch
 - CLI: run + debug subcommands, MemoryBus + UART + SyscallHandler wired up
 - TUI debugger: disasm, registers, memory hex dump, debugger controller, Rich layout
+- NPU: 8 custom instructions (opcode 0x0B), NpuState (64-bit acc + 4 vregs)
+  - MACC, RELU, QMUL, CLAMP, GELU (lookup table), RSTACC, LDVEC, STVEC
+  - NpuDevice at 0x20000000 for memory-mapped status reads
 - Compliance: 50 riscv-tests passing (42 rv32ui + 8 rv32um)
-- Firmware: fibonacci, sort, hello (syscall I/O), uart-hello (MMIO I/O)
+- Firmware: fibonacci, sort, hello, uart-hello, npu_test (all PASS)
 
 ## Key patterns
-- MemoryBus composes multi-byte from device read8/write8 (little-endian)
-- UART uses push_rx for RX, injectable tx_stream for capture in debug mode
-- ECALL priority: syscall_handler -> mtvec trap -> halt
-- TUI formatters are pure functions returning Rich-markup strings (testable without terminal)
-- DebuggerState is a mutable dataclass holding CPU + breakpoints + prev_regs
+- NPU instructions dispatched via funct3 on opcode 0x0B
+- GELU: precomputed 256-entry int8 lookup table, scale factor 32.0
+- NpuState is a mutable dataclass on CPU (cpu.npu_state)
+- Accumulator: 64-bit as two uint32 halves (acc_lo, acc_hi)
 - Toolchain: riscv64-unknown-elf-gcc -march=rv32im -mabi=ilp32
 
 ## Blockers
