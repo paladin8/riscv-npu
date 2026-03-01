@@ -5,7 +5,7 @@ import sys
 
 from .cpu.cpu import CPU
 from .devices.uart import UART, UART_BASE, UART_SIZE
-from .loader.elf import load_elf
+from .loader.elf import load_elf, parse_elf
 from .memory.bus import MemoryBus
 from .memory.ram import RAM
 from .syscall.handler import SyscallHandler
@@ -60,6 +60,12 @@ def run_binary(path: str) -> None:
         entry = load_elf(path, ram)
         cpu.pc = entry
         cpu.registers.write(2, STACK_TOP)  # SP = x2
+        # Set initial program break after loaded segments (16-byte aligned)
+        with open(path, "rb") as f:
+            prog = parse_elf(f.read())
+        if prog.segments:
+            end = max(s.vaddr + s.memsz for s in prog.segments)
+            handler.brk = (end + 15) & ~15
     else:
         # Raw binary: load at base address
         with open(path, "rb") as f:

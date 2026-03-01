@@ -1,9 +1,16 @@
 """CPU core: fetch-decode-execute loop."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from ..memory.bus import MemoryBus
 from .decode import decode
 from .execute import execute
 from .registers import RegisterFile
+
+if TYPE_CHECKING:
+    from ..syscall.handler import SyscallHandler
 
 # Well-known CSR addresses
 CSR_MSTATUS = 0x300
@@ -32,7 +39,7 @@ class CPU:
         self.cycle_count: int = 0
         self.tohost: int = 0
         self.tohost_addr: int = 0  # Memory-mapped tohost address (set by test runner)
-        self.syscall_handler: object | None = None  # Set to SyscallHandler instance
+        self.syscall_handler: SyscallHandler | None = None
         self.csrs: dict[int, int] = {
             CSR_MHARTID: 0,  # Hart 0
         }
