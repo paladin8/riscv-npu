@@ -435,3 +435,100 @@ class TestDisassembleRegion:
         bus.write32(0x80000000, word)
         lines = disassemble_region(bus, 0x80000000, 1)
         assert lines[0].word == word
+
+
+# --- NPU instruction encoding helpers ---
+
+def _npu_r_type(rd: int, rs1: int, rs2: int, funct3: int, funct7: int = 0) -> int:
+    """Encode an NPU R-type instruction word (opcode=0x0B)."""
+    return (funct7 << 25) | (rs2 << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | 0x0B
+
+
+def _npu_i_type(rd: int, rs1: int, imm12: int, funct3: int) -> int:
+    """Encode an NPU I-type instruction word (opcode=0x0B)."""
+    return ((imm12 & 0xFFF) << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | 0x0B
+
+
+def _npu_s_type(rs1: int, rs2: int, imm12: int, funct3: int) -> int:
+    """Encode an NPU S-type instruction word (opcode=0x0B)."""
+    imm_hi = (imm12 >> 5) & 0x7F
+    imm_lo = imm12 & 0x1F
+    return (imm_hi << 25) | (rs2 << 20) | (rs1 << 15) | (funct3 << 12) | (imm_lo << 7) | 0x0B
+
+
+class TestNpuDisassembly:
+    """Tests for NPU instruction disassembly (opcode 0x0B)."""
+
+    def test_macc(self) -> None:
+        word = _npu_r_type(rd=0, rs1=5, rs2=6, funct3=0b000)
+        inst = decode(word)
+        result = disassemble_instruction(inst)
+        assert result == "NPU.MACC x5, x6"
+
+    def test_relu(self) -> None:
+        word = _npu_r_type(rd=10, rs1=11, rs2=0, funct3=0b001)
+        inst = decode(word)
+        result = disassemble_instruction(inst)
+        assert result == "NPU.RELU x10, x11"
+
+    def test_qmul(self) -> None:
+        word = _npu_r_type(rd=7, rs1=8, rs2=9, funct3=0b010)
+        inst = decode(word)
+        result = disassemble_instruction(inst)
+        assert result == "NPU.QMUL x7, x8, x9"
+
+    def test_clamp(self) -> None:
+        word = _npu_r_type(rd=3, rs1=4, rs2=0, funct3=0b011)
+        inst = decode(word)
+        result = disassemble_instruction(inst)
+        assert result == "NPU.CLAMP x3, x4"
+
+    def test_gelu(self) -> None:
+        word = _npu_r_type(rd=12, rs1=13, rs2=0, funct3=0b100)
+        inst = decode(word)
+        result = disassemble_instruction(inst)
+        assert result == "NPU.GELU x12, x13"
+
+    def test_rstacc(self) -> None:
+        word = _npu_r_type(rd=15, rs1=0, rs2=0, funct3=0b101)
+        inst = decode(word)
+        result = disassemble_instruction(inst)
+        assert result == "NPU.RSTACC x15"
+
+    def test_ldvec(self) -> None:
+        word = _npu_i_type(rd=2, rs1=10, imm12=16, funct3=0b110)
+        inst = decode(word)
+        result = disassemble_instruction(inst)
+        assert result == "NPU.LDVEC v2, 16(x10)"
+
+    def test_stvec(self) -> None:
+        word = _npu_s_type(rs1=10, rs2=3, imm12=32, funct3=0b111)
+        inst = decode(word)
+        result = disassemble_instruction(inst)
+        assert result == "NPU.STVEC v3, 32(x10)"
+
+    def test_ldvec_vreg_wraps(self) -> None:
+        # rd=6, 6 % 4 = 2 -> v2
+        word = _npu_i_type(rd=6, rs1=1, imm12=0, funct3=0b110)
+        inst = decode(word)
+        result = disassemble_instruction(inst)
+        assert result == "NPU.LDVEC v2, 0(x1)"
+
+    def test_ldvec_negative_offset(self) -> None:
+        word = _npu_i_type(rd=0, rs1=5, imm12=(-8) & 0xFFF, funct3=0b110)
+        inst = decode(word)
+        result = disassemble_instruction(inst)
+        assert result == "NPU.LDVEC v0, -8(x5)"
+
+    def test_stvec_vreg_wraps(self) -> None:
+        # rs2=5, 5 % 4 = 1 -> v1
+        word = _npu_s_type(rs1=1, rs2=5, imm12=0, funct3=0b111)
+        inst = decode(word)
+        result = disassemble_instruction(inst)
+        assert result == "NPU.STVEC v1, 0(x1)"
+
+    def test_stvec_negative_offset(self) -> None:
+        word = _npu_s_type(rs1=5, rs2=0, imm12=(-4) & 0xFFF, funct3=0b111)
+        inst = decode(word)
+        result = disassemble_instruction(inst)
+        assert result == "NPU.STVEC v0, -4(x5)"

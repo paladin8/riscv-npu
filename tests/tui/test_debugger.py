@@ -8,6 +8,7 @@ from riscv_npu.memory.ram import RAM
 from riscv_npu.tui.debugger import (
     DebuggerState,
     debugger_continue,
+    debugger_run_at_speed,
     debugger_step,
     process_command,
 )
@@ -154,12 +155,18 @@ class TestProcessCommand:
         result = process_command(state, "continue")
         assert result is True
 
-    def test_run_alias(self) -> None:
+    def test_r_alias_runs_at_speed(self) -> None:
         state = _make_state()
         state.cpu.memory.write32(BASE, _ebreak_word())
-        result = process_command(state, "r")
+        result = process_command(state, "r 100")
         assert result is True
         assert state.cpu.halted is True
+
+    def test_run_no_args_shows_usage(self) -> None:
+        state = _make_state()
+        result = process_command(state, "run")
+        assert result is True
+        assert "Usage" in state.message
 
     def test_breakpoint_set(self) -> None:
         state = _make_state()
@@ -221,16 +228,34 @@ class TestProcessCommand:
         result = process_command(state, "blah")
         assert result is True
         assert "Unknown" in state.message
+        assert "step" in state.message  # help text included
 
     def test_empty_command(self) -> None:
         state = _make_state()
         result = process_command(state, "")
         assert result is True
+        assert "step" in state.message  # shows help
 
     def test_whitespace_command(self) -> None:
         state = _make_state()
         result = process_command(state, "   ")
         assert result is True
+        assert "step" in state.message  # shows help
+
+    def test_help_command(self) -> None:
+        state = _make_state()
+        result = process_command(state, "h")
+        assert result is True
+        assert "step" in state.message
+        assert "continue" in state.message
+        assert "breakpoint" in state.message
+        assert "quit" in state.message
+
+    def test_help_full_word(self) -> None:
+        state = _make_state()
+        result = process_command(state, "help")
+        assert result is True
+        assert "step" in state.message
 
     def test_case_insensitive(self) -> None:
         state = _make_state()
@@ -262,3 +287,129 @@ class TestDebuggerState:
     def test_uart_capture_is_bytesio(self) -> None:
         state = _make_state()
         assert isinstance(state.uart_capture, io.BytesIO)
+
+    def test_default_render_fn_none(self) -> None:
+        state = _make_state()
+        assert state.render_fn is None
+
+
+class TestDebuggerRunAtSpeed:
+    """Tests for debugger_run_at_speed function."""
+
+    def test_stops_on_halt(self) -> None:
+        state = _make_state()
+        state.cpu.memory.write32(BASE, _addi_word(1, 0, 1))
+        state.cpu.memory.write32(BASE + 4, _ebreak_word())
+        render_calls: list[int] = []
+        state.render_fn = lambda st: render_calls.append(1)
+        debugger_run_at_speed(state, hz=1_000_000)
+        assert state.cpu.halted is True
+        assert "halted" in state.message.lower()
+        assert len(render_calls) >= 1
+
+    def test_stops_on_breakpoint(self) -> None:
+        state = _make_state()
+        for i in range(10):
+            state.cpu.memory.write32(BASE + i * 4, _addi_word(1, 1, 1))
+        bp_addr = BASE + 5 * 4
+        state.breakpoints.add(bp_addr)
+        state.render_fn = lambda st: None
+        debugger_run_at_speed(state, hz=1_000_000)
+        assert state.cpu.pc == bp_addr
+        assert "Breakpoint" in state.message
+
+    def test_stops_at_max_steps(self) -> None:
+        state = _make_state()
+        nop = _addi_word(0, 0, 0)
+        for i in range(200):
+            state.cpu.memory.write32(BASE + i * 4, nop)
+        state.render_fn = lambda st: None
+        debugger_run_at_speed(state, hz=1_000_000, max_steps=50)
+        assert state.cpu.cycle_count == 50
+        assert "50 steps" in state.message
+
+    def test_updates_prev_regs(self) -> None:
+        state = _make_state()
+        state.cpu.registers.write(5, 0xBB)
+        state.cpu.memory.write32(BASE, _ebreak_word())
+        state.render_fn = lambda st: None
+        debugger_run_at_speed(state, hz=1_000_000)
+        assert state.prev_regs[5] == 0xBB
+
+    def test_halted_cpu_does_nothing(self) -> None:
+        state = _make_state()
+        state.cpu.halted = True
+        state.render_fn = lambda st: None
+        debugger_run_at_speed(state, hz=10)
+        assert "halted" in state.message.lower()
+
+    def test_no_render_fn_still_works(self) -> None:
+        state = _make_state()
+        state.cpu.memory.write32(BASE, _ebreak_word())
+        # render_fn is None by default
+        debugger_run_at_speed(state, hz=1_000_000)
+        assert state.cpu.halted is True
+
+    def test_render_called_each_frame(self) -> None:
+        state = _make_state()
+        nop = _addi_word(0, 0, 0)
+        for i in range(100):
+            state.cpu.memory.write32(BASE + i * 4, nop)
+        render_calls: list[int] = []
+        state.render_fn = lambda st: render_calls.append(1)
+        debugger_run_at_speed(state, hz=1_000_000, max_steps=10)
+        # At high hz, steps_per_frame = max(1, 1000000//30) = 33333
+        # But max_steps=10, so only ~1 frame
+        assert len(render_calls) >= 1
+
+
+class TestRunCommand:
+    """Tests for 'run' command parsing in process_command."""
+
+    def test_run_with_hz(self) -> None:
+        state = _make_state()
+        state.cpu.memory.write32(BASE, _ebreak_word())
+        state.render_fn = lambda st: None
+        result = process_command(state, "run 100")
+        assert result is True
+        assert state.cpu.halted is True
+
+    def test_run_with_hz_and_max_steps(self) -> None:
+        state = _make_state()
+        nop = _addi_word(0, 0, 0)
+        for i in range(200):
+            state.cpu.memory.write32(BASE + i * 4, nop)
+        state.render_fn = lambda st: None
+        result = process_command(state, "run 100 50")
+        assert result is True
+        assert state.cpu.cycle_count == 50
+
+    def test_run_invalid_hz(self) -> None:
+        state = _make_state()
+        result = process_command(state, "run abc")
+        assert result is True
+        assert "Invalid hz" in state.message
+
+    def test_run_zero_hz(self) -> None:
+        state = _make_state()
+        result = process_command(state, "run 0")
+        assert result is True
+        assert "Hz must be >= 1" in state.message
+
+    def test_run_negative_hz(self) -> None:
+        state = _make_state()
+        result = process_command(state, "run -5")
+        assert result is True
+        assert "Hz must be >= 1" in state.message
+
+    def test_run_invalid_max_steps(self) -> None:
+        state = _make_state()
+        result = process_command(state, "run 10 abc")
+        assert result is True
+        assert "Invalid max_steps" in state.message
+
+    def test_run_zero_max_steps(self) -> None:
+        state = _make_state()
+        result = process_command(state, "run 10 0")
+        assert result is True
+        assert "max_steps must be >= 1" in state.message

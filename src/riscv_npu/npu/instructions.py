@@ -9,6 +9,8 @@ from .engine import NpuState, acc_add, acc_reset, GELU_TABLE
 
 if TYPE_CHECKING:
     from ..cpu.cpu import CPU
+    from ..cpu.registers import RegisterFile
+    from ..memory.bus import MemoryBus
 
 
 def execute_npu(inst: Instruction, cpu: CPU) -> int:

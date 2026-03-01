@@ -45,6 +45,7 @@ RISC-V (RV32IM) emulator in Python with custom NPU instructions for neural netwo
 - Docstrings on all public functions
 - One test file per module, pytest, descriptive names
 - No external deps without logging rationale in .ai/memory.md. Add via uv add <pkg>.
+- Markdown tables must be ASCII-aligned: pad every cell so all rows have identical column widths (pipe characters line up vertically)
 
 ## Testing rules
 - One test minimum per instruction

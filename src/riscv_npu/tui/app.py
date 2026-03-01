@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import readline  # noqa: F401  # pyright: ignore[reportUnusedImport]
 import sys
 
 from rich.console import Console
@@ -19,6 +20,7 @@ from ..syscall.handler import SyscallHandler
 from .debugger import DebuggerState, process_command
 from .disasm import disassemble_region
 from .memory import format_hex_dump
+from .npu import format_npu_state
 from .registers import format_registers
 
 # System constants (match cli.py)
@@ -32,7 +34,9 @@ def render_debugger(state: DebuggerState) -> Layout:
 
     Layout structure:
         +------------------+------------------+
-        |   Registers      |   Disassembly    |
+        |   Registers      |                  |
+        +------------------+   Disassembly    |
+        |   NPU            |                  |
         +------------------+------------------+
         |   Memory         |   Output (UART)  |
         +------------------+------------------+
@@ -47,16 +51,26 @@ def render_debugger(state: DebuggerState) -> Layout:
     """
     layout = Layout()
 
-    # Top half: registers + disassembly
+    # Status panel height: 2 (border) + content lines
+    # Content = 1 info line + message lines
+    msg_lines = state.message.count("\n") + 1
+    status_height = 2 + 1 + msg_lines
+
+    # Top half: registers/NPU + disassembly
     layout.split_column(
         Layout(name="top", ratio=2),
         Layout(name="bottom", ratio=2),
-        Layout(name="status", size=3),
+        Layout(name="status", size=status_height),
     )
 
     layout["top"].split_row(
-        Layout(name="registers", ratio=1),
+        Layout(name="left_col", ratio=1),
         Layout(name="disassembly", ratio=1),
+    )
+
+    layout["left_col"].split_column(
+        Layout(name="registers", ratio=2),
+        Layout(name="npu", ratio=1),
     )
 
     layout["bottom"].split_row(
@@ -67,6 +81,10 @@ def render_debugger(state: DebuggerState) -> Layout:
     # Registers panel
     reg_text = format_registers(state.cpu.registers, state.prev_regs)
     layout["registers"].update(Panel(reg_text, title="Registers"))
+
+    # NPU panel
+    npu_text = format_npu_state(state.cpu.npu_state)
+    layout["npu"].update(Panel(npu_text, title="NPU"))
 
     # Disassembly panel
     disasm_lines = disassemble_region(state.cpu.memory, state.cpu.pc, 21)
@@ -87,7 +105,7 @@ def render_debugger(state: DebuggerState) -> Layout:
     mem_text = format_hex_dump(state.cpu.memory, state.mem_view_addr, num_rows=16)
     layout["memory"].update(Panel(mem_text, title=f"Memory @ 0x{state.mem_view_addr:08X}"))
 
-    # Output panel (UART capture)
+    # Output panel (UART + syscall stdout)
     uart_content = state.uart_capture.getvalue()
     try:
         uart_text = uart_content.decode("utf-8", errors="replace")
@@ -97,7 +115,7 @@ def render_debugger(state: DebuggerState) -> Layout:
     uart_lines = uart_text.split("\n")
     if len(uart_lines) > 20:
         uart_lines = uart_lines[-20:]
-    layout["output"].update(Panel("\n".join(uart_lines), title="Output (UART)"))
+    layout["output"].update(Panel("\n".join(uart_lines), title="Output"))
 
     # Status bar
     halted_str = "HALTED" if state.cpu.halted else "RUNNING"
@@ -133,7 +151,7 @@ def run_debugger(elf_path: str) -> None:
 
     # Set up CPU with syscall handler
     cpu = CPU(bus)
-    handler = SyscallHandler()
+    handler = SyscallHandler(stdout=uart_capture)
     cpu.syscall_handler = handler
 
     # Load ELF
@@ -157,10 +175,15 @@ def run_debugger(elf_path: str) -> None:
 
     console = Console()
 
+    def _render(st: DebuggerState) -> None:
+        console.clear()
+        lay = render_debugger(st)
+        console.print(lay)
+
+    state.render_fn = _render
+
     # Initial display
-    layout = render_debugger(state)
-    layout.size = console.height - 1
-    console.print(layout)
+    _render(state)
 
     # Command loop
     while True:
@@ -175,9 +198,6 @@ def run_debugger(elf_path: str) -> None:
             console.print("Exiting debugger.")
             break
 
-        console.clear()
-        layout = render_debugger(state)
-        layout.size = console.height - 1
-        console.print(layout)
+        _render(state)
 
     sys.exit(0)

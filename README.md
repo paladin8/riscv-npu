@@ -29,7 +29,7 @@ The emulator prints the cycle count and the values in registers `a0`/`a1` on exi
 Launch the interactive debugger:
 
 ```bash
-uv run python -m riscv_npu debug firmware/uart-hello/uart-hello.elf
+uv run python -m riscv_npu debug firmware/hello/hello.elf
 ```
 
 The debugger displays four panels: registers, disassembly, memory hex dump, and UART output. Changed registers are highlighted after each step.

@@ -56,8 +56,9 @@ class TestRenderDebugger:
         assert "Registers" in output
         assert "Disassembly" in output
         assert "Memory" in output
-        assert "Output" in output
+        assert "Output" in output  # panel title: "Output"
         assert "Status" in output
+        assert "NPU" in output
 
     def test_layout_shows_pc(self) -> None:
         state = _make_state()

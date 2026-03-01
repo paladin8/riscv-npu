@@ -19,6 +19,7 @@ from ..cpu.decode import (
     OP_JALR,
     OP_SYSTEM,
     OP_FENCE,
+    OP_NPU,
 )
 from ..memory.bus import MemoryBus
 
@@ -105,6 +106,18 @@ _CSR_MNEMONICS: dict[int, str] = {
     0b111: "CSRRCI",
 }
 
+# NPU mnemonics: funct3 -> name
+_NPU_MNEMONICS: dict[int, str] = {
+    0b000: "NPU.MACC",
+    0b001: "NPU.RELU",
+    0b010: "NPU.QMUL",
+    0b011: "NPU.CLAMP",
+    0b100: "NPU.GELU",
+    0b101: "NPU.RSTACC",
+    0b110: "NPU.LDVEC",
+    0b111: "NPU.STVEC",
+}
+
 
 def _reg(index: int) -> str:
     """Format a register reference as 'x<N>'."""
@@ -145,6 +158,8 @@ def disassemble_instruction(inst: Instruction) -> str:
         return f"JALR {_reg(inst.rd)}, {_reg(inst.rs1)}, {_imm_signed(inst.imm)}"
     elif inst.opcode == OP_SYSTEM:
         return _disasm_system(inst)
+    elif inst.opcode == OP_NPU:
+        return _disasm_npu(inst)
     elif inst.opcode == OP_FENCE:
         return "FENCE"
     else:
@@ -225,6 +240,28 @@ def _disasm_system(inst: Instruction) -> str:
             return f"{name} {_reg(inst.rd)}, 0x{csr_addr:03X}, {inst.rs1}"
         else:
             return f"{name} {_reg(inst.rd)}, 0x{csr_addr:03X}, {_reg(inst.rs1)}"
+
+
+def _disasm_npu(inst: Instruction) -> str:
+    """Disassemble an NPU instruction (opcode 0x0B)."""
+    name = _NPU_MNEMONICS.get(inst.funct3, f"NPU?{inst.funct3}")
+    f3 = inst.funct3
+    if f3 == 0b000:  # MACC: no rd
+        return f"{name} {_reg(inst.rs1)}, {_reg(inst.rs2)}"
+    elif f3 in (0b001, 0b011, 0b100):  # RELU, CLAMP, GELU: rd, rs1
+        return f"{name} {_reg(inst.rd)}, {_reg(inst.rs1)}"
+    elif f3 == 0b010:  # QMUL: rd, rs1, rs2
+        return f"{name} {_reg(inst.rd)}, {_reg(inst.rs1)}, {_reg(inst.rs2)}"
+    elif f3 == 0b101:  # RSTACC: rd only
+        return f"{name} {_reg(inst.rd)}"
+    elif f3 == 0b110:  # LDVEC: I-type load
+        offset = _imm_signed(inst.imm)
+        return f"{name} v{inst.rd % 4}, {offset}({_reg(inst.rs1)})"
+    elif f3 == 0b111:  # STVEC: S-type store
+        offset = _imm_signed(inst.imm)
+        return f"{name} v{inst.rs2 % 4}, {offset}({_reg(inst.rs1)})"
+    else:
+        return name
 
 
 def disassemble_region(
