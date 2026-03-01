@@ -158,7 +158,9 @@ def run_debugger(elf_path: str) -> None:
     console = Console()
 
     # Initial display
-    console.print(render_debugger(state))
+    layout = render_debugger(state)
+    layout.size = console.height - 1
+    console.print(layout)
 
     # Command loop
     while True:
@@ -174,6 +176,8 @@ def run_debugger(elf_path: str) -> None:
             break
 
         console.clear()
-        console.print(render_debugger(state))
+        layout = render_debugger(state)
+        layout.size = console.height - 1
+        console.print(layout)
 
     sys.exit(0)
