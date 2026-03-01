@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ..cpu.decode import Instruction, to_signed
-from .engine import NpuState, acc_add, acc_reset, GELU_TABLE
+from .engine import NpuState, acc_add, acc_reset, GELU_TABLE, exp_q16_16, rsqrt_q16_16
 
 if TYPE_CHECKING:
     from ..cpu.cpu import CPU
@@ -39,10 +39,23 @@ def execute_npu(inst: Instruction, cpu: CPU) -> int:
     pc = cpu.pc
 
     if f3 == 0:
-        if inst.funct7 == 1:
-            _exec_vmac(inst, regs, cpu.memory, npu)
-        else:
+        f7 = inst.funct7
+        if f7 == 0:
             _exec_macc(inst, regs, npu)
+        elif f7 == 1:
+            _exec_vmac(inst, regs, cpu.memory, npu)
+        elif f7 == 2:
+            _exec_vexp(inst, regs, cpu.memory)
+        elif f7 == 3:
+            _exec_vrsqrt(inst, regs, cpu.memory)
+        elif f7 == 4:
+            _exec_vmul(inst, regs, cpu.memory, npu)
+        elif f7 == 5:
+            _exec_vreduce(inst, regs, cpu.memory)
+        elif f7 == 6:
+            _exec_vmax(inst, regs, cpu.memory)
+        else:
+            raise ValueError(f"Unknown NPU funct7: {f7:#09b} for funct3=0")
     elif f3 == 1:
         _exec_relu(inst, regs)
     elif f3 == 2:
@@ -207,3 +220,125 @@ def _exec_stvec(
         # Convert signed int8 to unsigned byte
         byte_val = val & 0xFF
         mem.write8((addr + i) & 0xFFFFFFFF, byte_val)
+
+
+# ==================== Phase 7: Vector instructions ====================
+
+
+def _exec_vexp(
+    inst: Instruction,
+    regs: 'RegisterFile',
+    mem: 'MemoryBus',
+) -> None:
+    """NPU.VEXP: vectorized exp over int32 Q16.16 array.
+
+    For each element i in 0..n-1:
+        dst[i] = exp_q16_16(src[i])
+
+    Reads rd as element count, rs1 as source address, rs2 as destination
+    address. Elements are int32 (4 bytes each) in Q16.16 fixed-point format.
+    """
+    n = regs.read(inst.rd)
+    addr_src = regs.read(inst.rs1)
+    addr_dst = regs.read(inst.rs2)
+    for i in range(n):
+        src_addr = (addr_src + i * 4) & 0xFFFFFFFF
+        dst_addr = (addr_dst + i * 4) & 0xFFFFFFFF
+        val = mem.read32(src_addr)
+        result = exp_q16_16(val)
+        mem.write32(dst_addr, result & 0xFFFFFFFF)
+
+
+def _exec_vrsqrt(
+    inst: Instruction,
+    regs: 'RegisterFile',
+    mem: 'MemoryBus',
+) -> None:
+    """NPU.VRSQRT: scalar reciprocal square root in Q16.16.
+
+    Reads one int32 from mem[rs1] as Q16.16 fixed-point input.
+    Computes 1/sqrt(x) in Q16.16 and writes the result to register rd.
+    """
+    addr = regs.read(inst.rs1)
+    val = mem.read32(addr)
+    result = rsqrt_q16_16(val)
+    regs.write(inst.rd, result & 0xFFFFFFFF)
+
+
+def _exec_vmul(
+    inst: Instruction,
+    regs: 'RegisterFile',
+    mem: 'MemoryBus',
+    npu: NpuState,
+) -> None:
+    """NPU.VMUL: scale int8 vector by Q16.16 factor from accumulator.
+
+    For each element i in 0..n-1:
+        dst[i] = clamp((src_int8[i] * acc_lo_signed) >> 16, -128, 127)
+
+    Reads rd as element count, rs1 as source int8 address, rs2 as
+    destination int8 address. The scale factor is taken from acc_lo,
+    interpreted as a signed 32-bit Q16.16 value.
+    The accumulator is NOT modified.
+    """
+    n = regs.read(inst.rd)
+    addr_src = regs.read(inst.rs1)
+    addr_dst = regs.read(inst.rs2)
+    # Scale factor from accumulator low word, interpreted as signed
+    scale = to_signed(npu.acc_lo)
+    for i in range(n):
+        byte_val = mem.read8((addr_src + i) & 0xFFFFFFFF)
+        # Sign-extend byte to int8
+        src_signed = byte_val - 256 if byte_val >= 128 else byte_val
+        # Multiply and arithmetic right shift by 16
+        product = src_signed * scale
+        result = product >> 16  # Python >> on negative is arithmetic
+        # Clamp to int8 range
+        result = max(-128, min(127, result))
+        # Write as unsigned byte
+        mem.write8((addr_dst + i) & 0xFFFFFFFF, result & 0xFF)
+
+
+def _exec_vreduce(
+    inst: Instruction,
+    regs: 'RegisterFile',
+    mem: 'MemoryBus',
+) -> None:
+    """NPU.VREDUCE: sum int32 array and write result to rd.
+
+    Reads rs2 as element count, rs1 as source address of int32 array.
+    Sums all elements (signed int32) and writes the 32-bit result to rd.
+    If count is 0, rd is set to 0.
+    """
+    n = regs.read(inst.rs2)
+    addr_src = regs.read(inst.rs1)
+    total = 0
+    for i in range(n):
+        val = mem.read32((addr_src + i * 4) & 0xFFFFFFFF)
+        total += to_signed(val)
+    regs.write(inst.rd, total & 0xFFFFFFFF)
+
+
+def _exec_vmax(
+    inst: Instruction,
+    regs: 'RegisterFile',
+    mem: 'MemoryBus',
+) -> None:
+    """NPU.VMAX: find maximum of int32 array and write result to rd.
+
+    Reads rs2 as element count, rs1 as source address of int32 array.
+    Finds the maximum signed int32 value and writes it to rd.
+    If count is 0, rd is set to 0x80000000 (minimum int32).
+    """
+    n = regs.read(inst.rs2)
+    addr_src = regs.read(inst.rs1)
+    if n == 0:
+        regs.write(inst.rd, 0x80000000)
+        return
+    max_val = -0x80000000  # Start with minimum int32
+    for i in range(n):
+        val = mem.read32((addr_src + i * 4) & 0xFFFFFFFF)
+        signed_val = to_signed(val)
+        if signed_val > max_val:
+            max_val = signed_val
+    regs.write(inst.rd, max_val & 0xFFFFFFFF)

@@ -11,6 +11,9 @@ from riscv_npu.npu.engine import (
     build_gelu_table,
     GELU_TABLE,
     _gelu_int8,
+    exp_q16_16,
+    rsqrt_q16_16,
+    Q16_ONE,
 )
 
 
@@ -171,3 +174,96 @@ class TestGeluTable:
         """build_gelu_table() produces the same result as GELU_TABLE."""
         fresh = build_gelu_table()
         assert fresh == GELU_TABLE
+
+
+class TestExpQ1616:
+    """Tests for exp_q16_16 (Q16.16 fixed-point exponential)."""
+
+    def test_exp_zero(self) -> None:
+        """exp(0) = 1.0 in Q16.16 = 65536."""
+        assert exp_q16_16(0) == Q16_ONE
+
+    def test_exp_one(self) -> None:
+        """exp(1.0) ~ 2.71828 in Q16.16 ~ 178145."""
+        result = exp_q16_16(Q16_ONE)
+        expected = round(math.e * Q16_ONE)
+        assert abs(result - expected) <= 1
+
+    def test_exp_negative_one(self) -> None:
+        """exp(-1.0) ~ 0.36788 in Q16.16 ~ 24109."""
+        neg_one = (-Q16_ONE) & 0xFFFFFFFF
+        result = exp_q16_16(neg_one)
+        expected = round(math.exp(-1.0) * Q16_ONE)
+        assert abs(result - expected) <= 1
+
+    def test_exp_negative_eight(self) -> None:
+        """exp(-8.0) ~ 0.000335 in Q16.16 ~ 22."""
+        neg_eight = (-8 * Q16_ONE) & 0xFFFFFFFF
+        result = exp_q16_16(neg_eight)
+        expected = round(math.exp(-8.0) * Q16_ONE)
+        assert abs(result - expected) <= 1
+
+    def test_exp_always_positive(self) -> None:
+        """exp(x) is always positive for any input."""
+        for x_float in [-20.0, -10.0, -5.0, -1.0, 0.0, 1.0, 5.0]:
+            x_q = round(x_float * Q16_ONE) & 0xFFFFFFFF
+            result = exp_q16_16(x_q)
+            assert result >= 0, f"exp({x_float}) produced negative result: {result}"
+
+    def test_exp_monotonic(self) -> None:
+        """exp(x) is monotonically increasing."""
+        prev = 0
+        for x_float in [-8.0, -4.0, -2.0, -1.0, 0.0, 1.0, 2.0]:
+            x_q = round(x_float * Q16_ONE) & 0xFFFFFFFF
+            result = exp_q16_16(x_q)
+            assert result >= prev, (
+                f"exp not monotonic: exp({x_float})={result} < prev={prev}"
+            )
+            prev = result
+
+
+class TestRsqrtQ1616:
+    """Tests for rsqrt_q16_16 (Q16.16 reciprocal square root)."""
+
+    def test_rsqrt_one(self) -> None:
+        """rsqrt(1.0) = 1.0 in Q16.16."""
+        assert rsqrt_q16_16(Q16_ONE) == Q16_ONE
+
+    def test_rsqrt_four(self) -> None:
+        """rsqrt(4.0) = 0.5 in Q16.16 = 32768."""
+        result = rsqrt_q16_16(4 * Q16_ONE)
+        expected = Q16_ONE // 2
+        assert result == expected
+
+    def test_rsqrt_quarter(self) -> None:
+        """rsqrt(0.25) = 2.0 in Q16.16 = 131072."""
+        result = rsqrt_q16_16(Q16_ONE // 4)
+        expected = 2 * Q16_ONE
+        assert result == expected
+
+    def test_rsqrt_hundred(self) -> None:
+        """rsqrt(100.0) = 0.1 in Q16.16 ~ 6554."""
+        result = rsqrt_q16_16(100 * Q16_ONE)
+        expected = round(0.1 * Q16_ONE)
+        assert abs(result - expected) <= 1
+
+    def test_rsqrt_zero_saturates(self) -> None:
+        """rsqrt(0) should return max positive value."""
+        result = rsqrt_q16_16(0)
+        assert result == 0x7FFFFFFF
+
+    def test_rsqrt_negative_saturates(self) -> None:
+        """rsqrt(negative) should return max positive value."""
+        neg = (-Q16_ONE) & 0xFFFFFFFF
+        result = rsqrt_q16_16(neg)
+        assert result == 0x7FFFFFFF
+
+    def test_rsqrt_small_positive(self) -> None:
+        """rsqrt(0.01) ~ 10.0 in Q16.16, accounting for Q16.16 quantization."""
+        x_q = round(0.01 * Q16_ONE)
+        result = rsqrt_q16_16(x_q)
+        # x_q = 655, actual value = 655/65536 ~ 0.009995
+        # rsqrt(0.009995) ~ 10.0027, in Q16.16 ~ 655540
+        x_actual = x_q / Q16_ONE
+        expected = round((1.0 / math.sqrt(x_actual)) * Q16_ONE)
+        assert abs(result - expected) <= 1

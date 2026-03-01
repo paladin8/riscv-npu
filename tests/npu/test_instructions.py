@@ -659,3 +659,394 @@ class TestNPUIntegration:
         initial_pc = cpu.pc
         _exec(cpu, _npu_r(0, 0, 0, 1, 0))  # RELU
         assert cpu.pc == initial_pc + 4
+
+
+# ==================== VEXP tests ====================
+
+class TestVEXP:
+    """NPU.VEXP: vectorized exp over Q16.16 int32 array."""
+
+    Q16_ONE = 1 << 16  # 65536 = 1.0 in Q16.16
+
+    def _write_q16_array(self, cpu: CPU, addr: int, values: list[int]) -> None:
+        """Write a list of Q16.16 int32 values to memory."""
+        for i, v in enumerate(values):
+            cpu.memory.write32(addr + i * 4, v & 0xFFFFFFFF)
+
+    def _read_q16_array(self, cpu: CPU, addr: int, count: int) -> list[int]:
+        """Read Q16.16 int32 values from memory."""
+        return [cpu.memory.read32(addr + i * 4) for i in range(count)]
+
+    def test_vexp_zero(self) -> None:
+        """exp(0) = 1.0 in Q16.16 = 65536."""
+        cpu = _make_cpu()
+        data_base = BASE + 0x1000
+        dst_base = BASE + 0x2000
+        self._write_q16_array(cpu, data_base, [0])  # 0.0 in Q16.16
+        cpu.registers.write(10, data_base)   # rs1 = src
+        cpu.registers.write(11, dst_base)    # rs2 = dst
+        cpu.registers.write(12, 1)           # rd = count
+        # VEXP: funct7=2, rs2=x11, rs1=x10, funct3=0, rd=x12
+        _exec(cpu, _npu_r(2, 11, 10, 0, 12))
+        result = self._read_q16_array(cpu, dst_base, 1)
+        assert result[0] == self.Q16_ONE  # exp(0) = 1.0
+
+    def test_vexp_negative_one(self) -> None:
+        """exp(-1.0) ~ 0.3679 in Q16.16 ~ 24109."""
+        cpu = _make_cpu()
+        data_base = BASE + 0x1000
+        dst_base = BASE + 0x2000
+        neg_one = (-self.Q16_ONE) & 0xFFFFFFFF  # -1.0 in Q16.16
+        self._write_q16_array(cpu, data_base, [neg_one])
+        cpu.registers.write(10, data_base)
+        cpu.registers.write(11, dst_base)
+        cpu.registers.write(12, 1)
+        _exec(cpu, _npu_r(2, 11, 10, 0, 12))
+        result = self._read_q16_array(cpu, dst_base, 1)
+        expected = round(0.367879441 * self.Q16_ONE)  # ~24109
+        assert abs(result[0] - expected) <= 1
+
+    def test_vexp_large_negative(self) -> None:
+        """exp(-8.0) ~ 0.000335, small positive in Q16.16."""
+        cpu = _make_cpu()
+        data_base = BASE + 0x1000
+        dst_base = BASE + 0x2000
+        neg_eight = (-8 * self.Q16_ONE) & 0xFFFFFFFF
+        self._write_q16_array(cpu, data_base, [neg_eight])
+        cpu.registers.write(10, data_base)
+        cpu.registers.write(11, dst_base)
+        cpu.registers.write(12, 1)
+        _exec(cpu, _npu_r(2, 11, 10, 0, 12))
+        result = self._read_q16_array(cpu, dst_base, 1)
+        expected = round(0.000335463 * self.Q16_ONE)  # ~22
+        assert result[0] > 0
+        assert abs(result[0] - expected) <= 1
+
+    def test_vexp_multiple_elements(self) -> None:
+        """VEXP on 4 elements: verify each output."""
+        import math as _math
+        cpu = _make_cpu()
+        data_base = BASE + 0x1000
+        dst_base = BASE + 0x2000
+        inputs = [0, -self.Q16_ONE, -2 * self.Q16_ONE, -4 * self.Q16_ONE]
+        self._write_q16_array(cpu, data_base, inputs)
+        cpu.registers.write(10, data_base)
+        cpu.registers.write(11, dst_base)
+        cpu.registers.write(12, 4)
+        _exec(cpu, _npu_r(2, 11, 10, 0, 12))
+        results = self._read_q16_array(cpu, dst_base, 4)
+        for i, x in enumerate(inputs):
+            x_float = to_signed(x & 0xFFFFFFFF) / self.Q16_ONE
+            expected = round(_math.exp(x_float) * self.Q16_ONE)
+            assert abs(results[i] - expected) <= 1, (
+                f"VEXP mismatch at index {i}: got {results[i]}, expected {expected}"
+            )
+
+    def test_vexp_zero_count(self) -> None:
+        """VEXP with n=0 does nothing."""
+        cpu = _make_cpu()
+        data_base = BASE + 0x1000
+        dst_base = BASE + 0x2000
+        cpu.memory.write32(dst_base, 0xDEADBEEF)  # sentinel
+        cpu.registers.write(10, data_base)
+        cpu.registers.write(11, dst_base)
+        cpu.registers.write(12, 0)
+        _exec(cpu, _npu_r(2, 11, 10, 0, 12))
+        assert cpu.memory.read32(dst_base) == 0xDEADBEEF  # untouched
+
+
+# ==================== VRSQRT tests ====================
+
+class TestVRSQRT:
+    """NPU.VRSQRT: scalar 1/sqrt(x) in Q16.16."""
+
+    Q16_ONE = 1 << 16
+
+    def test_vrsqrt_one(self) -> None:
+        """rsqrt(1.0) = 1.0 in Q16.16."""
+        cpu = _make_cpu()
+        addr = BASE + 0x1000
+        cpu.memory.write32(addr, self.Q16_ONE)  # 1.0
+        cpu.registers.write(10, addr)  # rs1 = addr
+        # VRSQRT: funct7=3, rs2=0, rs1=x10, funct3=0, rd=x3
+        _exec(cpu, _npu_r(3, 0, 10, 0, 3))
+        result = cpu.registers.read(3)
+        assert result == self.Q16_ONE  # 1/sqrt(1) = 1.0
+
+    def test_vrsqrt_four(self) -> None:
+        """rsqrt(4.0) = 0.5 in Q16.16 = 32768."""
+        cpu = _make_cpu()
+        addr = BASE + 0x1000
+        cpu.memory.write32(addr, 4 * self.Q16_ONE)  # 4.0
+        cpu.registers.write(10, addr)
+        _exec(cpu, _npu_r(3, 0, 10, 0, 3))
+        result = cpu.registers.read(3)
+        expected = self.Q16_ONE // 2  # 0.5 = 32768
+        assert result == expected
+
+    def test_vrsqrt_quarter(self) -> None:
+        """rsqrt(0.25) = 2.0 in Q16.16 = 131072."""
+        cpu = _make_cpu()
+        addr = BASE + 0x1000
+        cpu.memory.write32(addr, self.Q16_ONE // 4)  # 0.25
+        cpu.registers.write(10, addr)
+        _exec(cpu, _npu_r(3, 0, 10, 0, 3))
+        result = cpu.registers.read(3)
+        expected = 2 * self.Q16_ONE  # 2.0 = 131072
+        assert result == expected
+
+    def test_vrsqrt_large(self) -> None:
+        """rsqrt(100.0) = 0.1 in Q16.16 ~ 6554."""
+        cpu = _make_cpu()
+        addr = BASE + 0x1000
+        cpu.memory.write32(addr, 100 * self.Q16_ONE)  # 100.0
+        cpu.registers.write(10, addr)
+        _exec(cpu, _npu_r(3, 0, 10, 0, 3))
+        result = cpu.registers.read(3)
+        expected = round(0.1 * self.Q16_ONE)  # ~6554
+        assert abs(to_signed(result) - expected) <= 1
+
+    def test_vrsqrt_zero_saturates(self) -> None:
+        """rsqrt(0) should saturate to max value."""
+        cpu = _make_cpu()
+        addr = BASE + 0x1000
+        cpu.memory.write32(addr, 0)  # 0.0
+        cpu.registers.write(10, addr)
+        _exec(cpu, _npu_r(3, 0, 10, 0, 3))
+        result = cpu.registers.read(3)
+        assert result == 0x7FFFFFFF  # Saturated max
+
+
+# ==================== VMUL tests ====================
+
+class TestVMUL:
+    """NPU.VMUL: scale int8 vector by Q16.16 factor from accumulator."""
+
+    Q16_ONE = 1 << 16
+
+    def _write_bytes(self, cpu: CPU, addr: int, values: list[int]) -> None:
+        """Write a list of int8 values to memory as unsigned bytes."""
+        for i, v in enumerate(values):
+            cpu.memory.write8(addr + i, v & 0xFF)
+
+    def _read_bytes_signed(self, cpu: CPU, addr: int, count: int) -> list[int]:
+        """Read bytes from memory as signed int8 values."""
+        result = []
+        for i in range(count):
+            b = cpu.memory.read8(addr + i)
+            result.append(b - 256 if b >= 128 else b)
+        return result
+
+    def test_vmul_identity(self) -> None:
+        """Scale=1.0 (acc_lo=65536), values pass through unchanged."""
+        cpu = _make_cpu()
+        src_addr = BASE + 0x1000
+        dst_addr = BASE + 0x2000
+        values = [10, -20, 50, -100, 127, -128]
+        self._write_bytes(cpu, src_addr, values)
+        # Set accumulator to 1.0 in Q16.16
+        acc_set64(cpu.npu_state, self.Q16_ONE)
+        cpu.registers.write(10, src_addr)  # rs1 = src
+        cpu.registers.write(11, dst_addr)  # rs2 = dst
+        cpu.registers.write(12, 6)         # rd = count
+        # VMUL: funct7=4, rs2=x11, rs1=x10, funct3=0, rd=x12
+        _exec(cpu, _npu_r(4, 11, 10, 0, 12))
+        result = self._read_bytes_signed(cpu, dst_addr, 6)
+        assert result == values
+
+    def test_vmul_half(self) -> None:
+        """Scale=0.5, values halved."""
+        cpu = _make_cpu()
+        src_addr = BASE + 0x1000
+        dst_addr = BASE + 0x2000
+        values = [100, -100, 50, -50]
+        self._write_bytes(cpu, src_addr, values)
+        acc_set64(cpu.npu_state, self.Q16_ONE // 2)  # 0.5
+        cpu.registers.write(10, src_addr)
+        cpu.registers.write(11, dst_addr)
+        cpu.registers.write(12, 4)
+        _exec(cpu, _npu_r(4, 11, 10, 0, 12))
+        result = self._read_bytes_signed(cpu, dst_addr, 4)
+        # 100*0.5=50, -100*0.5=-50, 50*0.5=25, -50*0.5=-25
+        assert result == [50, -50, 25, -25]
+
+    def test_vmul_negative_scale(self) -> None:
+        """Negative scale factor inverts sign."""
+        cpu = _make_cpu()
+        src_addr = BASE + 0x1000
+        dst_addr = BASE + 0x2000
+        values = [10, -10]
+        self._write_bytes(cpu, src_addr, values)
+        # -1.0 in Q16.16 as acc_lo (signed interpretation of 0xFFFF0000)
+        neg_one = (-self.Q16_ONE) & 0xFFFFFFFF
+        acc_set64(cpu.npu_state, neg_one)
+        cpu.registers.write(10, src_addr)
+        cpu.registers.write(11, dst_addr)
+        cpu.registers.write(12, 2)
+        _exec(cpu, _npu_r(4, 11, 10, 0, 12))
+        result = self._read_bytes_signed(cpu, dst_addr, 2)
+        assert result == [-10, 10]
+
+    def test_vmul_clamps_to_int8(self) -> None:
+        """Overflow is clamped to [-128, 127]."""
+        cpu = _make_cpu()
+        src_addr = BASE + 0x1000
+        dst_addr = BASE + 0x2000
+        values = [100, -100]
+        self._write_bytes(cpu, src_addr, values)
+        # Scale = 2.0 -> 100*2=200 > 127, should clamp to 127
+        acc_set64(cpu.npu_state, 2 * self.Q16_ONE)
+        cpu.registers.write(10, src_addr)
+        cpu.registers.write(11, dst_addr)
+        cpu.registers.write(12, 2)
+        _exec(cpu, _npu_r(4, 11, 10, 0, 12))
+        result = self._read_bytes_signed(cpu, dst_addr, 2)
+        assert result == [127, -128]
+
+    def test_vmul_zero_count(self) -> None:
+        """VMUL with n=0 does nothing."""
+        cpu = _make_cpu()
+        dst_addr = BASE + 0x2000
+        cpu.memory.write8(dst_addr, 0xAB)  # sentinel
+        acc_set64(cpu.npu_state, self.Q16_ONE)
+        cpu.registers.write(10, BASE + 0x1000)
+        cpu.registers.write(11, dst_addr)
+        cpu.registers.write(12, 0)
+        _exec(cpu, _npu_r(4, 11, 10, 0, 12))
+        assert cpu.memory.read8(dst_addr) == 0xAB  # untouched
+
+    def test_vmul_preserves_accumulator(self) -> None:
+        """VMUL does not modify the accumulator."""
+        cpu = _make_cpu()
+        src_addr = BASE + 0x1000
+        dst_addr = BASE + 0x2000
+        cpu.memory.write8(src_addr, 10)
+        acc_set64(cpu.npu_state, self.Q16_ONE)
+        cpu.registers.write(10, src_addr)
+        cpu.registers.write(11, dst_addr)
+        cpu.registers.write(12, 1)
+        _exec(cpu, _npu_r(4, 11, 10, 0, 12))
+        assert acc_get64(cpu.npu_state) == self.Q16_ONE
+
+
+# ==================== VREDUCE tests ====================
+
+class TestVREDUCE:
+    """NPU.VREDUCE: sum int32 array into rd."""
+
+    def _write_int32_array(self, cpu: CPU, addr: int, values: list[int]) -> None:
+        """Write int32 values to memory."""
+        for i, v in enumerate(values):
+            cpu.memory.write32(addr + i * 4, v & 0xFFFFFFFF)
+
+    def test_vreduce_basic(self) -> None:
+        """Sum of [1, 2, 3, 4] = 10."""
+        cpu = _make_cpu()
+        addr = BASE + 0x1000
+        self._write_int32_array(cpu, addr, [1, 2, 3, 4])
+        cpu.registers.write(10, addr)  # rs1 = addr
+        cpu.registers.write(11, 4)     # rs2 = count
+        # VREDUCE: funct7=5, rs2=x11, rs1=x10, funct3=0, rd=x3
+        _exec(cpu, _npu_r(5, 11, 10, 0, 3))
+        assert cpu.registers.read(3) == 10
+
+    def test_vreduce_negative(self) -> None:
+        """Sum including negatives: [10, -3, 5, -7] = 5."""
+        cpu = _make_cpu()
+        addr = BASE + 0x1000
+        self._write_int32_array(cpu, addr, [10, -3, 5, -7])
+        cpu.registers.write(10, addr)
+        cpu.registers.write(11, 4)
+        _exec(cpu, _npu_r(5, 11, 10, 0, 3))
+        assert to_signed(cpu.registers.read(3)) == 5
+
+    def test_vreduce_single(self) -> None:
+        """Single element: [42] -> 42."""
+        cpu = _make_cpu()
+        addr = BASE + 0x1000
+        self._write_int32_array(cpu, addr, [42])
+        cpu.registers.write(10, addr)
+        cpu.registers.write(11, 1)
+        _exec(cpu, _npu_r(5, 11, 10, 0, 3))
+        assert cpu.registers.read(3) == 42
+
+    def test_vreduce_zero_count(self) -> None:
+        """VREDUCE with n=0 returns 0."""
+        cpu = _make_cpu()
+        cpu.registers.write(10, BASE + 0x1000)
+        cpu.registers.write(11, 0)
+        _exec(cpu, _npu_r(5, 11, 10, 0, 3))
+        assert cpu.registers.read(3) == 0
+
+    def test_vreduce_large_values(self) -> None:
+        """VREDUCE with large values to test 32-bit wrapping."""
+        cpu = _make_cpu()
+        addr = BASE + 0x1000
+        self._write_int32_array(cpu, addr, [0x7FFFFFFF, 1])
+        cpu.registers.write(10, addr)
+        cpu.registers.write(11, 2)
+        _exec(cpu, _npu_r(5, 11, 10, 0, 3))
+        # 0x7FFFFFFF + 1 = 0x80000000 (wraps to negative in int32)
+        result = cpu.registers.read(3)
+        assert result == 0x80000000
+
+
+# ==================== VMAX tests ====================
+
+class TestVMAX:
+    """NPU.VMAX: find maximum of int32 array."""
+
+    def _write_int32_array(self, cpu: CPU, addr: int, values: list[int]) -> None:
+        """Write int32 values to memory."""
+        for i, v in enumerate(values):
+            cpu.memory.write32(addr + i * 4, v & 0xFFFFFFFF)
+
+    def test_vmax_basic(self) -> None:
+        """Max of [1, 5, 3, 2] = 5."""
+        cpu = _make_cpu()
+        addr = BASE + 0x1000
+        self._write_int32_array(cpu, addr, [1, 5, 3, 2])
+        cpu.registers.write(10, addr)  # rs1 = addr
+        cpu.registers.write(11, 4)     # rs2 = count
+        # VMAX: funct7=6, rs2=x11, rs1=x10, funct3=0, rd=x3
+        _exec(cpu, _npu_r(6, 11, 10, 0, 3))
+        assert cpu.registers.read(3) == 5
+
+    def test_vmax_all_negative(self) -> None:
+        """Max of [-3, -1, -5] = -1."""
+        cpu = _make_cpu()
+        addr = BASE + 0x1000
+        self._write_int32_array(cpu, addr, [-3, -1, -5])
+        cpu.registers.write(10, addr)
+        cpu.registers.write(11, 3)
+        _exec(cpu, _npu_r(6, 11, 10, 0, 3))
+        result = to_signed(cpu.registers.read(3))
+        assert result == -1
+
+    def test_vmax_single(self) -> None:
+        """Single element: [42] -> 42."""
+        cpu = _make_cpu()
+        addr = BASE + 0x1000
+        self._write_int32_array(cpu, addr, [42])
+        cpu.registers.write(10, addr)
+        cpu.registers.write(11, 1)
+        _exec(cpu, _npu_r(6, 11, 10, 0, 3))
+        assert cpu.registers.read(3) == 42
+
+    def test_vmax_zero_count(self) -> None:
+        """VMAX with n=0 returns 0x80000000 (minimum int32)."""
+        cpu = _make_cpu()
+        cpu.registers.write(10, BASE + 0x1000)
+        cpu.registers.write(11, 0)
+        _exec(cpu, _npu_r(6, 11, 10, 0, 3))
+        assert cpu.registers.read(3) == 0x80000000
+
+    def test_vmax_mixed(self) -> None:
+        """Max of mixed positive and negative: [-100, 0, 100, -50] = 100."""
+        cpu = _make_cpu()
+        addr = BASE + 0x1000
+        self._write_int32_array(cpu, addr, [-100, 0, 100, -50])
+        cpu.registers.write(10, addr)
+        cpu.registers.write(11, 4)
+        _exec(cpu, _npu_r(6, 11, 10, 0, 3))
+        assert cpu.registers.read(3) == 100

@@ -244,13 +244,11 @@ def _disasm_system(inst: Instruction) -> str:
 
 def _disasm_npu(inst: Instruction) -> str:
     """Disassemble an NPU instruction (opcode 0x0B)."""
-    name = _NPU_MNEMONICS.get(inst.funct3, f"NPU?{inst.funct3}")
     f3 = inst.funct3
     if f3 == 0b000:
-        if inst.funct7 == 1:  # VMAC: rd=count, rs1=addr_a, rs2=addr_b
-            return f"NPU.VMAC {_reg(inst.rd)}, {_reg(inst.rs1)}, {_reg(inst.rs2)}"
-        return f"{name} {_reg(inst.rs1)}, {_reg(inst.rs2)}"  # MACC: no rd
-    elif f3 in (0b001, 0b011, 0b100):  # RELU, CLAMP, GELU: rd, rs1
+        return _disasm_npu_f3_0(inst)
+    name = _NPU_MNEMONICS.get(f3, f"NPU?{f3}")
+    if f3 in (0b001, 0b011, 0b100):  # RELU, CLAMP, GELU: rd, rs1
         return f"{name} {_reg(inst.rd)}, {_reg(inst.rs1)}"
     elif f3 == 0b010:  # QMUL: rd, rs1, rs2
         return f"{name} {_reg(inst.rd)}, {_reg(inst.rs1)}, {_reg(inst.rs2)}"
@@ -262,6 +260,40 @@ def _disasm_npu(inst: Instruction) -> str:
     elif f3 == 0b111:  # STVEC: S-type store
         offset = _imm_signed(inst.imm)
         return f"{name} v{inst.rs2 % 4}, {offset}({_reg(inst.rs1)})"
+    else:
+        return name
+
+
+# funct3=0 sub-dispatch by funct7
+_NPU_F3_0_MNEMONICS: dict[int, str] = {
+    0: "NPU.MACC",
+    1: "NPU.VMAC",
+    2: "NPU.VEXP",
+    3: "NPU.VRSQRT",
+    4: "NPU.VMUL",
+    5: "NPU.VREDUCE",
+    6: "NPU.VMAX",
+}
+
+
+def _disasm_npu_f3_0(inst: Instruction) -> str:
+    """Disassemble funct3=0 NPU instructions (dispatched by funct7)."""
+    f7 = inst.funct7
+    name = _NPU_F3_0_MNEMONICS.get(f7, f"NPU.F7?{f7}")
+    if f7 == 0:  # MACC: rs1, rs2 (no rd output)
+        return f"{name} {_reg(inst.rs1)}, {_reg(inst.rs2)}"
+    elif f7 == 1:  # VMAC: rd=count, rs1=addr_a, rs2=addr_b
+        return f"{name} {_reg(inst.rd)}, {_reg(inst.rs1)}, {_reg(inst.rs2)}"
+    elif f7 == 2:  # VEXP: rd=count, rs1=src, rs2=dst
+        return f"{name} {_reg(inst.rd)}, {_reg(inst.rs1)}, {_reg(inst.rs2)}"
+    elif f7 == 3:  # VRSQRT: rd=result, rs1=addr (scalar)
+        return f"{name} {_reg(inst.rd)}, {_reg(inst.rs1)}"
+    elif f7 == 4:  # VMUL: rd=count, rs1=src, rs2=dst
+        return f"{name} {_reg(inst.rd)}, {_reg(inst.rs1)}, {_reg(inst.rs2)}"
+    elif f7 == 5:  # VREDUCE: rd=result, rs1=addr, rs2=count
+        return f"{name} {_reg(inst.rd)}, {_reg(inst.rs1)}, {_reg(inst.rs2)}"
+    elif f7 == 6:  # VMAX: rd=result, rs1=addr, rs2=count
+        return f"{name} {_reg(inst.rd)}, {_reg(inst.rs1)}, {_reg(inst.rs2)}"
     else:
         return name
 
