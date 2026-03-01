@@ -1,7 +1,7 @@
 # Project State
 
 ## Status
-Phase 4 COMPLETE. 434 tests passing.
+Phase 4 COMPLETE. 434 tests passing. Next: Phase 5 (NPU).
 
 ## What's implemented
 - RV32IM: all 49 instructions (41 base + 8 M extension)
@@ -20,7 +20,7 @@ Phase 4 COMPLETE. 434 tests passing.
 - UART uses push_rx for RX, injectable tx_stream for capture in debug mode
 - ECALL priority: syscall_handler -> mtvec trap -> halt
 - TUI formatters are pure functions returning Rich-markup strings (testable without terminal)
-- DebuggerState is a mutable dataclass (not frozen) holding CPU + breakpoints + prev_regs
+- DebuggerState is a mutable dataclass holding CPU + breakpoints + prev_regs
 - Toolchain: riscv64-unknown-elf-gcc -march=rv32im -mabi=ilp32
 
 ## Blockers

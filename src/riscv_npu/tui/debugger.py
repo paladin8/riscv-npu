@@ -59,7 +59,6 @@ def debugger_continue(state: DebuggerState, max_cycles: int = 10000) -> None:
         return
 
     state.prev_regs = snapshot_registers(state.cpu.registers)
-    start_cycle = state.cpu.cycle_count
     cycles_run = 0
 
     while not state.cpu.halted and cycles_run < max_cycles:

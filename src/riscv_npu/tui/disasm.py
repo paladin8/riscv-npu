@@ -166,7 +166,6 @@ def _disasm_r_type(inst: Instruction) -> str:
 def _disasm_i_arith(inst: Instruction) -> str:
     """Disassemble an I-type arithmetic instruction."""
     f3 = inst.funct3
-    imm_val = _imm_signed(inst.imm)
 
     # Shift instructions use shamt (lower 5 bits of imm)
     if f3 == 0b001:  # SLLI
@@ -180,6 +179,7 @@ def _disasm_i_arith(inst: Instruction) -> str:
             return f"SRLI {_reg(inst.rd)}, {_reg(inst.rs1)}, {shamt}"
 
     name = _I_ARITH_MNEMONICS.get(f3, f"I_ARITH?{f3}")
+    imm_val = _imm_signed(inst.imm)
     return f"{name} {_reg(inst.rd)}, {_reg(inst.rs1)}, {imm_val}"
 
 
