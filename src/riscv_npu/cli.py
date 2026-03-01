@@ -23,13 +23,16 @@ def main() -> None:
     run_parser = sub.add_parser("run", help="Run a binary or ELF file")
     run_parser.add_argument("binary", help="Path to binary or ELF file")
 
-    # Placeholder for future 'debug' command
-    sub.add_parser("debug", help="Run with TUI debugger (not yet implemented)")
+    debug_parser = sub.add_parser("debug", help="Run with TUI debugger")
+    debug_parser.add_argument("binary", help="Path to ELF file to debug")
 
     args = parser.parse_args()
 
     if args.command == "run":
         run_binary(args.binary)
+    elif args.command == "debug":
+        from .tui import run_debugger
+        run_debugger(args.binary)
     else:
         parser.print_help()
         sys.exit(1)
