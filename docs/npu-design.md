@@ -1,18 +1,21 @@
 # NPU Design
 
-The Neural Processing Unit (NPU) is a custom coprocessor embedded in the RISC-V pipeline. It adds 9 instructions under opcode `0x0B` (the RISC-V custom-0 encoding space) that accelerate quantized int8 neural network inference.
+The Neural Processing Unit (NPU) is a custom coprocessor embedded in the RISC-V pipeline. It adds 14 instructions under opcode `0x0B` (the RISC-V custom-0 encoding space) that accelerate quantized int8 neural network inference, including transformer workloads.
 
 ## Motivation
 
 Neural network inference on a bare RV32IM core requires many general-purpose instructions to perform operations that have predictable, repetitive structure: multiply-accumulate loops, activation functions, and quantization math. The NPU instructions collapse these hot paths into single-cycle operations.
 
-| Bottleneck               | Without NPU                                            | With NPU            |
-|--------------------------|--------------------------------------------------------|---------------------|
-| Dot product (N elements) | N multiplies + N adds + bookkeeping                    | 1 × VMAC + RSTACC   |
-| ReLU activation          | branch + move                                          | RELU                |
-| GELU activation          | floating-point approximation (not available on RV32IM) | GELU (table lookup) |
-| Quantized multiply       | multiply + shift + sign handling                       | QMUL                |
-| Clamp to int8            | two comparisons + two branches                         | CLAMP               |
+| Bottleneck               | Without NPU                                            | With NPU              |
+|--------------------------|--------------------------------------------------------|-----------------------|
+| Dot product (N elements) | N multiplies + N adds + bookkeeping                    | 1 × VMAC + RSTACC     |
+| ReLU activation          | branch + move                                          | RELU                  |
+| GELU activation          | floating-point approximation (not available on RV32IM) | GELU (table lookup)   |
+| Quantized multiply       | multiply + shift + sign handling                       | QMUL                  |
+| Clamp to int8            | two comparisons + two branches                         | CLAMP                 |
+| Softmax (N elements)     | N exp + sum + N div (all float, not available)         | VMAX + VEXP + VREDUCE |
+| RMSNorm                  | N sq + sum + sqrt + N div (all float)                  | VREDUCE + VRSQRT      |
+| Vector scale             | N multiply + N shift + N clamp                         | VMUL                  |
 
 ## NPU State
 
@@ -173,6 +176,93 @@ Stores 4 int8 values from a vector register to consecutive memory bytes. The sou
 
 **Use case**: Writing back computed activations to memory.
 
+### NPU.VEXP -- Vector Exponential (Phase 7)
+
+```
+funct3 = 000, funct7 = 0000010    Format: R-type
+Syntax: NPU.VEXP rd, rs1, rs2
+```
+
+```
+n = regs[rd]
+for i in 0..n-1:
+    mem32[regs[rs2] + i*4] = exp_q16_16(mem32[regs[rs1] + i*4])
+```
+
+Reads `n` (from rd) int32 values from memory at address `rs1`, computes the exponential of each Q16.16 fixed-point value, and writes the Q16.16 results to memory at address `rs2`. Used in softmax computation.
+
+**Use case**: Softmax numerator: after subtracting the max, exponentiate each score.
+
+### NPU.VRSQRT -- Vector Reciprocal Square Root (Phase 7)
+
+```
+funct3 = 000, funct7 = 0000011    Format: R-type
+Syntax: NPU.VRSQRT rd, rs1
+```
+
+`rd = rsqrt_q16_16(mem32[regs[rs1]])`
+
+Scalar operation. Reads one int32 from memory at address `rs1`, computes 1/sqrt(x) in Q16.16 fixed-point, and writes the result to register `rd`. Input must be positive; zero or negative inputs saturate to 0x7FFFFFFF.
+
+**Use case**: RMSNorm: compute the scaling factor `1/sqrt(mean(x^2) + eps)`.
+
+### NPU.VMUL -- Vector Scale (Phase 7)
+
+```
+funct3 = 000, funct7 = 0000100    Format: R-type
+Syntax: NPU.VMUL rd, rs1, rs2
+```
+
+```
+n = regs[rd]
+scale = signed(acc_lo)   // Q16.16 from accumulator
+for i in 0..n-1:
+    val = sign_extend_8(mem8[regs[rs1] + i])
+    result = (val * scale) >> 16
+    mem8[regs[rs2] + i] = clamp(result, -128, 127)
+```
+
+Scales each int8 element from the source array by a Q16.16 factor taken from the accumulator low word (`acc_lo`), writing clamped int8 results to the destination array. The accumulator is NOT modified.
+
+**Use case**: RMSNorm scaling, attention score normalization.
+
+### NPU.VREDUCE -- Vector Sum Reduction (Phase 7)
+
+```
+funct3 = 000, funct7 = 0000101    Format: R-type
+Syntax: NPU.VREDUCE rd, rs1, rs2
+```
+
+`rd = sum(mem32[regs[rs1] + i*4]) for i in 0..regs[rs2]-1`
+
+Sums `n` signed int32 values from memory. Count is read from register `rs2`, source address from `rs1`. The 32-bit sum is written to `rd`.
+
+**Use case**: Softmax denominator (sum of exp values), RMSNorm mean computation.
+
+### NPU.VMAX -- Vector Max Reduction (Phase 7)
+
+```
+funct3 = 000, funct7 = 0000110    Format: R-type
+Syntax: NPU.VMAX rd, rs1, rs2
+```
+
+`rd = max(mem32[regs[rs1] + i*4]) for i in 0..regs[rs2]-1`
+
+Finds the maximum signed int32 value from `n` elements in memory. Returns 0x80000000 if count is 0.
+
+**Use case**: Softmax numerical stability: subtract the max score before exponentiation.
+
+## Q16.16 Fixed-Point Format (Phase 7)
+
+The Phase 7 vector instructions use Q16.16 signed fixed-point for intermediate precision:
+
+- **Representation**: 32-bit signed integer. Bits [31:16] = integer part, bits [15:0] = fractional part.
+- **1.0** = 0x00010000 = 65536.
+- **Range**: approximately [-32768.0, +32767.99998].
+- **Resolution**: 1/65536 ~ 0.0000153.
+
+This format avoids floating-point hardware while providing sufficient precision for softmax and RMSNorm computations.
+
 ## Memory-Mapped Registers
 
 The NPU exposes read-only status registers at base address `0x20000000` for debugger inspection and diagnostic firmware:
@@ -211,17 +301,22 @@ int32_t c = NPU_CLAMP(wide_val);
 
 Available macros/functions:
 
-| Intrinsic                   | Signature                            | Instruction |
-|-----------------------------|--------------------------------------|-------------|
-| `NPU_MACC(a, b)`            | macro, no return                     | NPU.MACC    |
-| `NPU_VMAC(a, b, n)`         | macro, no return                     | NPU.VMAC    |
-| `NPU_RSTACC()`              | `int32_t NPU_RSTACC(void)`           | NPU.RSTACC  |
-| `NPU_RELU(src)`             | `int32_t NPU_RELU(int32_t)`          | NPU.RELU    |
-| `NPU_GELU(src)`             | `int32_t NPU_GELU(int32_t)`          | NPU.GELU    |
-| `NPU_QMUL(a, b)`            | `int32_t NPU_QMUL(int32_t, int32_t)` | NPU.QMUL    |
-| `NPU_CLAMP(src)`            | `int32_t NPU_CLAMP(int32_t)`         | NPU.CLAMP   |
+| Intrinsic                    | Signature                              | Instruction  |
+|------------------------------|----------------------------------------|--------------|
+| `NPU_MACC(a, b)`             | macro, no return                       | NPU.MACC     |
+| `NPU_VMAC(a, b, n)`          | macro, no return                       | NPU.VMAC     |
+| `NPU_RSTACC()`               | `int32_t NPU_RSTACC(void)`             | NPU.RSTACC   |
+| `NPU_RELU(src)`              | `int32_t NPU_RELU(int32_t)`            | NPU.RELU     |
+| `NPU_GELU(src)`              | `int32_t NPU_GELU(int32_t)`            | NPU.GELU     |
+| `NPU_QMUL(a, b)`             | `int32_t NPU_QMUL(int32_t, int32_t)`   | NPU.QMUL     |
+| `NPU_CLAMP(src)`             | `int32_t NPU_CLAMP(int32_t)`           | NPU.CLAMP    |
+| `NPU_VEXP(src, dst, n)`      | macro, no return                       | NPU.VEXP     |
+| `NPU_VRSQRT(addr)`           | `int32_t NPU_VRSQRT(void *)`           | NPU.VRSQRT   |
+| `NPU_VMUL(src, dst, n)`      | macro, no return                       | NPU.VMUL     |
+| `NPU_VREDUCE(addr, n)`       | `int32_t NPU_VREDUCE(void *, int)`     | NPU.VREDUCE  |
+| `NPU_VMAX(addr, n)`          | `int32_t NPU_VMAX(void *, int)`        | NPU.VMAX     |
 
-LDVEC/STVEC do not have C intrinsics yet (planned for vectorized firmware in later phases).
+LDVEC/STVEC do not have C intrinsics yet.
 
 ## Typical Inference Pipeline
 
