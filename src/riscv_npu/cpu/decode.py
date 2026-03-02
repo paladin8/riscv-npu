@@ -226,18 +226,18 @@ _FP_NPU_F3_MNEMONICS: dict[int, str] = {
 
 # OP-FP funct7 -> name
 _OP_FP_MNEMONICS: dict[int, str] = {
-    0x00: "fadd.s", 0x04: "fsub.s", 0x08: "fmul.s", 0x0C: "fdiv.s",
-    0x2C: "fsqrt.s",
+    0x00: "FADD.S", 0x04: "FSUB.S", 0x08: "FMUL.S", 0x0C: "FDIV.S",
+    0x2C: "FSQRT.S",
 }
 
 # OP-FP funct7=0x10 sign-injection by funct3
 _FSGNJ_MNEMONICS: dict[int, str] = {
-    0: "fsgnj.s", 1: "fsgnjn.s", 2: "fsgnjx.s",
+    0: "FSGNJ.S", 1: "FSGNJN.S", 2: "FSGNJX.S",
 }
 
 # OP-FP funct7=0x50 compare by funct3
 _FCMP_MNEMONICS: dict[int, str] = {
-    0: "fle.s", 1: "flt.s", 2: "feq.s",
+    0: "FLE.S", 1: "FLT.S", 2: "FEQ.S",
 }
 
 
@@ -251,7 +251,7 @@ def instruction_mnemonic(inst: Instruction) -> str:
         inst: A decoded Instruction dataclass.
 
     Returns:
-        A short string like "ADD", "ADDI", "NPU.FMACC", "flw", etc.
+        A short string like "ADD", "ADDI", "NPU.FMACC", "FLW", etc.
     """
     op = inst.opcode
 
@@ -319,41 +319,41 @@ def instruction_mnemonic(inst: Instruction) -> str:
         return _FP_NPU_F3_MNEMONICS.get(inst.funct3, "FP_NPU?")
 
     if op == OP_LOAD_FP:
-        return "flw"
+        return "FLW"
 
     if op == OP_STORE_FP:
-        return "fsw"
+        return "FSW"
 
     if op == OP_FMADD:
-        return "fmadd.s"
+        return "FMADD.S"
 
     if op == OP_FMSUB:
-        return "fmsub.s"
+        return "FMSUB.S"
 
     if op == OP_FNMSUB:
-        return "fnmsub.s"
+        return "FNMSUB.S"
 
     if op == OP_FNMADD:
-        return "fnmadd.s"
+        return "FNMADD.S"
 
     if op == OP_OP_FP:
         f7 = inst.funct7
         if f7 in _OP_FP_MNEMONICS:
             return _OP_FP_MNEMONICS[f7]
         if f7 == 0x10:
-            return _FSGNJ_MNEMONICS.get(inst.funct3, "fsgnj?")
+            return _FSGNJ_MNEMONICS.get(inst.funct3, "FSGNJ?")
         if f7 == 0x14:
-            return "fmin.s" if inst.funct3 == 0 else "fmax.s"
+            return "FMIN.S" if inst.funct3 == 0 else "FMAX.S"
         if f7 == 0x50:
-            return _FCMP_MNEMONICS.get(inst.funct3, "fcmp?")
+            return _FCMP_MNEMONICS.get(inst.funct3, "FCMP?")
         if f7 == 0x60:
-            return "fcvt.w.s" if inst.rs2 == 0 else "fcvt.wu.s"
+            return "FCVT.W.S" if inst.rs2 == 0 else "FCVT.WU.S"
         if f7 == 0x68:
-            return "fcvt.s.w" if inst.rs2 == 0 else "fcvt.s.wu"
+            return "FCVT.S.W" if inst.rs2 == 0 else "FCVT.S.WU"
         if f7 == 0x70:
-            return "fmv.x.w" if inst.funct3 == 0 else "fclass.s"
+            return "FMV.X.W" if inst.funct3 == 0 else "FCLASS.S"
         if f7 == 0x78:
-            return "fmv.w.x"
-        return "OP-FP?"
+            return "FMV.W.X"
+        return "OP_FP?"
 
     return "UNKNOWN"

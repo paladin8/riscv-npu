@@ -20,10 +20,10 @@ class TestCategorize:
         assert _categorize("REMU") == "M-ext"
 
     def test_f_ext(self) -> None:
-        assert _categorize("fadd.s") == "F-ext"
-        assert _categorize("flw") == "F-ext"
-        assert _categorize("fsw") == "F-ext"
-        assert _categorize("fmadd.s") == "F-ext"
+        assert _categorize("FADD.S") == "F-ext"
+        assert _categorize("FLW") == "F-ext"
+        assert _categorize("FSW") == "F-ext"
+        assert _categorize("FMADD.S") == "F-ext"
 
     def test_npu_int(self) -> None:
         assert _categorize("NPU.MACC") == "NPU-int"
@@ -75,12 +75,11 @@ class TestFormatInstructionStatsCategories:
         stats = {
             "ADD": 100,
             "MUL": 50,
-            "fadd.s": 30,
+            "FADD.S": 30,
             "NPU.MACC": 20,
             "NPU.FMACC": 10,
         }
         result = format_instruction_stats(stats)
-        assert "By category:" in result
         assert "RV32I" in result
         assert "M-ext" in result
         assert "F-ext" in result

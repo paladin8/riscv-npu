@@ -49,6 +49,8 @@ uv run python -m riscv_npu debug firmware/hello/hello.elf
 
 The debugger displays panels for registers, disassembly, memory hex dump, UART output, FPU state, NPU state (integer + float accumulators, vector registers), and instruction statistics. Changed values are highlighted after each step.
 
+<img src="images/tui-debugger.png" alt="TUI debugger" width="800">
+
 Use `--write SYMBOL:FILE` to load file contents into memory at an ELF symbol's address before execution. This is useful for injecting test data (e.g. weight files or input images) into firmware buffers.
 
 ### Debugger commands
@@ -132,24 +134,24 @@ uv run pytest -x           # stop on first failure
                       +----------v----------------+
                       |        CPU Core           |
                       |  fetch -> decode -> exec  |
-                      +--+-----+-----+-----+-----+
+                      +--+-----+-----+-----+------+
                          |     |     |     |
-               +---------+  +-+--+  |  +--+--------+
+               +---------+   +-+   +-+   +-+--------+
                |             |     |     |          |
-        +------v------+ +---v--+  |  +--v---+ +----v-----+
-        | RegisterFile | | FPU |  |  | NPU  | | Syscall  |
-        | x0-x31       | | f0-f31| |  | int  | | Handler  |
-        +--------------+ | fcsr | |  | fp   | +----------+
-                         +------+ |  +------+
-                                  |
-                      +-----------v-----------+
-                      |      Memory Bus       |
-                      +--+--------+--------+--+
-                         |        |        |
-                  +------v--+ +--v-----+ +-v----------+
-                  |   RAM   | | UART   | | NPU MMIO   |
-                  | 4 MB    | | 16550  | | debug regs  |
-                  +---------+ +--------+ +------------+
+        +------v-------+ +---v---+ |  +--v---+ +----v----+
+        | RegisterFile | | FPU   | |  | NPU  | | Syscall |
+        | x0-x31       | | f0-f31| |  | int  | | Handler |
+        +--------------+ | fcsr  | |  | fp   | +---------+
+                         +-------+ |  +------+
+                                   |
+                       +-----------v-----------+
+                       |      Memory Bus       |
+                       +--+--------+--------+--+
+                          |        |        |
+                   +------v--+ +---v----+ +-v----------+
+                   |   RAM   | | UART   | | NPU MMIO   |
+                   | 4 MB    | | 16550  | | debug regs |
+                   +---------+ +--------+ +------------+
 ```
 
 ### Source layout

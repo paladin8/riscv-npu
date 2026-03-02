@@ -20,14 +20,14 @@ _M_EXT_MNEMONICS: set[str] = {
 }
 
 _F_EXT_MNEMONICS: set[str] = {
-    "fadd.s", "fsub.s", "fmul.s", "fdiv.s", "fsqrt.s",
-    "fmadd.s", "fmsub.s", "fnmsub.s", "fnmadd.s",
-    "fsgnj.s", "fsgnjn.s", "fsgnjx.s",
-    "fmin.s", "fmax.s",
-    "feq.s", "flt.s", "fle.s",
-    "fcvt.w.s", "fcvt.wu.s", "fcvt.s.w", "fcvt.s.wu",
-    "fmv.x.w", "fmv.w.x", "fclass.s",
-    "flw", "fsw",
+    "FADD.S", "FSUB.S", "FMUL.S", "FDIV.S", "FSQRT.S",
+    "FMADD.S", "FMSUB.S", "FNMSUB.S", "FNMADD.S",
+    "FSGNJ.S", "FSGNJN.S", "FSGNJX.S",
+    "FMIN.S", "FMAX.S",
+    "FEQ.S", "FLT.S", "FLE.S",
+    "FCVT.W.S", "FCVT.WU.S", "FCVT.S.W", "FCVT.S.WU",
+    "FMV.X.W", "FMV.W.X", "FCLASS.S",
+    "FLW", "FSW",
 }
 
 _NPU_INT_MNEMONICS: set[str] = {
@@ -98,34 +98,44 @@ def format_instruction_stats(stats: dict[str, int], top_n: int = 15) -> str:
     lines.append(f"Top {min(top_n, len(sorted_stats))} instructions (total: {total:,})")
     lines.append("")
 
+    # Format entries, then arrange in columns
+    entries: list[str] = []
     for name, count in shown:
         pct = count / total * 100
         padded_name = name.ljust(max_name_len)
         padded_count = str(count).rjust(max_count_len)
-        lines.append(f"  {padded_name}  {padded_count}  ({pct:5.1f}%)")
+        entries.append(f"{padded_name} {padded_count} ({pct:5.1f}%)")
 
     if len(sorted_stats) > top_n:
         rest_count = sum(c for _, c in sorted_stats[top_n:])
         rest_pct = rest_count / total * 100
-        lines.append(f"  {'... others'.ljust(max_name_len)}  {str(rest_count).rjust(max_count_len)}  ({rest_pct:5.1f}%)")
+        entries.append(f"{'... others'.ljust(max_name_len)} {str(rest_count).rjust(max_count_len)} ({rest_pct:5.1f}%)")
 
-    # Category totals
+    # Lay out in 5 columns (3 rows for 15 entries)
+    col_width = max(len(e) for e in entries) + 2
+    n_cols = 5
+    n_rows = (len(entries) + n_cols - 1) // n_cols
+    for row in range(n_rows):
+        parts: list[str] = []
+        for col in range(n_cols):
+            idx = col * n_rows + row
+            if idx < len(entries):
+                parts.append(entries[idx].ljust(col_width))
+        lines.append("  " + "".join(parts).rstrip())
+
+    # Category totals as a single row
     cat_totals: dict[str, int] = {}
     for name, count in stats.items():
         cat = _categorize(name)
         cat_totals[cat] = cat_totals.get(cat, 0) + count
 
     lines.append("")
-    lines.append("By category:")
-    max_cat_len = max(len(c) for c in cat_totals)
-    max_cat_count_len = max(len(str(v)) for v in cat_totals.values())
+    cat_parts: list[str] = []
     for cat in ["RV32I", "M-ext", "F-ext", "NPU-int", "NPU-fp", "Other"]:
         if cat in cat_totals:
             count = cat_totals[cat]
             pct = count / total * 100
-            lines.append(
-                f"  {cat.ljust(max_cat_len)}  "
-                f"{str(count).rjust(max_cat_count_len)}  ({pct:5.1f}%)"
-            )
+            cat_parts.append(f"{cat}: {count:,} ({pct:.0f}%)")
+    lines.append("  " + "  |  ".join(cat_parts))
 
     return "\n".join(lines)

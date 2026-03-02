@@ -567,108 +567,108 @@ class TestInstructionMnemonicFpu:
 
     def test_flw(self) -> None:
         word = _encode_i(0, 2, 0b010, 1, OP_LOAD_FP)
-        assert instruction_mnemonic(decode(word)) == "flw"
+        assert instruction_mnemonic(decode(word)) == "FLW"
 
     def test_fsw(self) -> None:
         word = (5 << 20) | (2 << 15) | (0b010 << 12) | (0 << 7) | OP_STORE_FP
-        assert instruction_mnemonic(decode(word)) == "fsw"
+        assert instruction_mnemonic(decode(word)) == "FSW"
 
     def test_fadd(self) -> None:
         word = _encode_fp_r(0x00, 3, 2, 0b000, 1)
-        assert instruction_mnemonic(decode(word)) == "fadd.s"
+        assert instruction_mnemonic(decode(word)) == "FADD.S"
 
     def test_fsub(self) -> None:
         word = _encode_fp_r(0x04, 3, 2, 0b000, 1)
-        assert instruction_mnemonic(decode(word)) == "fsub.s"
+        assert instruction_mnemonic(decode(word)) == "FSUB.S"
 
     def test_fmul(self) -> None:
         word = _encode_fp_r(0x08, 3, 2, 0b000, 1)
-        assert instruction_mnemonic(decode(word)) == "fmul.s"
+        assert instruction_mnemonic(decode(word)) == "FMUL.S"
 
     def test_fdiv(self) -> None:
         word = _encode_fp_r(0x0C, 3, 2, 0b000, 1)
-        assert instruction_mnemonic(decode(word)) == "fdiv.s"
+        assert instruction_mnemonic(decode(word)) == "FDIV.S"
 
     def test_fsqrt(self) -> None:
         word = _encode_fp_r(0x2C, 0, 2, 0b000, 1)
-        assert instruction_mnemonic(decode(word)) == "fsqrt.s"
+        assert instruction_mnemonic(decode(word)) == "FSQRT.S"
 
     def test_fmadd(self) -> None:
         # R4-type: rs3 in bits[31:27]
         word = (1 << 27) | (3 << 20) | (2 << 15) | (0 << 12) | (1 << 7) | OP_FMADD
-        assert instruction_mnemonic(decode(word)) == "fmadd.s"
+        assert instruction_mnemonic(decode(word)) == "FMADD.S"
 
     def test_fmsub(self) -> None:
         word = (1 << 27) | (3 << 20) | (2 << 15) | (0 << 12) | (1 << 7) | OP_FMSUB
-        assert instruction_mnemonic(decode(word)) == "fmsub.s"
+        assert instruction_mnemonic(decode(word)) == "FMSUB.S"
 
     def test_fnmsub(self) -> None:
         word = (1 << 27) | (3 << 20) | (2 << 15) | (0 << 12) | (1 << 7) | OP_FNMSUB
-        assert instruction_mnemonic(decode(word)) == "fnmsub.s"
+        assert instruction_mnemonic(decode(word)) == "FNMSUB.S"
 
     def test_fnmadd(self) -> None:
         word = (1 << 27) | (3 << 20) | (2 << 15) | (0 << 12) | (1 << 7) | OP_FNMADD
-        assert instruction_mnemonic(decode(word)) == "fnmadd.s"
+        assert instruction_mnemonic(decode(word)) == "FNMADD.S"
 
     def test_fsgnj(self) -> None:
         word = _encode_fp_r(0x10, 3, 2, 0b000, 1)
-        assert instruction_mnemonic(decode(word)) == "fsgnj.s"
+        assert instruction_mnemonic(decode(word)) == "FSGNJ.S"
 
     def test_fsgnjn(self) -> None:
         word = _encode_fp_r(0x10, 3, 2, 0b001, 1)
-        assert instruction_mnemonic(decode(word)) == "fsgnjn.s"
+        assert instruction_mnemonic(decode(word)) == "FSGNJN.S"
 
     def test_fsgnjx(self) -> None:
         word = _encode_fp_r(0x10, 3, 2, 0b010, 1)
-        assert instruction_mnemonic(decode(word)) == "fsgnjx.s"
+        assert instruction_mnemonic(decode(word)) == "FSGNJX.S"
 
     def test_fmin(self) -> None:
         word = _encode_fp_r(0x14, 3, 2, 0b000, 1)
-        assert instruction_mnemonic(decode(word)) == "fmin.s"
+        assert instruction_mnemonic(decode(word)) == "FMIN.S"
 
     def test_fmax(self) -> None:
         word = _encode_fp_r(0x14, 3, 2, 0b001, 1)
-        assert instruction_mnemonic(decode(word)) == "fmax.s"
+        assert instruction_mnemonic(decode(word)) == "FMAX.S"
 
     def test_feq(self) -> None:
         word = _encode_fp_r(0x50, 3, 2, 0b010, 1)
-        assert instruction_mnemonic(decode(word)) == "feq.s"
+        assert instruction_mnemonic(decode(word)) == "FEQ.S"
 
     def test_flt(self) -> None:
         word = _encode_fp_r(0x50, 3, 2, 0b001, 1)
-        assert instruction_mnemonic(decode(word)) == "flt.s"
+        assert instruction_mnemonic(decode(word)) == "FLT.S"
 
     def test_fle(self) -> None:
         word = _encode_fp_r(0x50, 3, 2, 0b000, 1)
-        assert instruction_mnemonic(decode(word)) == "fle.s"
+        assert instruction_mnemonic(decode(word)) == "FLE.S"
 
     def test_fcvt_w_s(self) -> None:
         word = _encode_fp_r(0x60, 0, 2, 0b000, 1)
-        assert instruction_mnemonic(decode(word)) == "fcvt.w.s"
+        assert instruction_mnemonic(decode(word)) == "FCVT.W.S"
 
     def test_fcvt_wu_s(self) -> None:
         word = _encode_fp_r(0x60, 1, 2, 0b000, 1)
-        assert instruction_mnemonic(decode(word)) == "fcvt.wu.s"
+        assert instruction_mnemonic(decode(word)) == "FCVT.WU.S"
 
     def test_fcvt_s_w(self) -> None:
         word = _encode_fp_r(0x68, 0, 2, 0b000, 1)
-        assert instruction_mnemonic(decode(word)) == "fcvt.s.w"
+        assert instruction_mnemonic(decode(word)) == "FCVT.S.W"
 
     def test_fcvt_s_wu(self) -> None:
         word = _encode_fp_r(0x68, 1, 2, 0b000, 1)
-        assert instruction_mnemonic(decode(word)) == "fcvt.s.wu"
+        assert instruction_mnemonic(decode(word)) == "FCVT.S.WU"
 
     def test_fmv_x_w(self) -> None:
         word = _encode_fp_r(0x70, 0, 2, 0b000, 1)
-        assert instruction_mnemonic(decode(word)) == "fmv.x.w"
+        assert instruction_mnemonic(decode(word)) == "FMV.X.W"
 
     def test_fclass(self) -> None:
         word = _encode_fp_r(0x70, 0, 2, 0b001, 1)
-        assert instruction_mnemonic(decode(word)) == "fclass.s"
+        assert instruction_mnemonic(decode(word)) == "FCLASS.S"
 
     def test_fmv_w_x(self) -> None:
         word = _encode_fp_r(0x78, 0, 2, 0b000, 1)
-        assert instruction_mnemonic(decode(word)) == "fmv.w.x"
+        assert instruction_mnemonic(decode(word)) == "FMV.W.X"
 
 
 def _encode_npu_r(funct7: int, rs2: int, rs1: int, funct3: int, rd: int) -> int:

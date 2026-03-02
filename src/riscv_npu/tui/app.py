@@ -62,10 +62,11 @@ def render_debugger(state: DebuggerState) -> Layout:
     status_height = 2 + 1 + msg_lines
 
     # Top half: registers/NPU + disassembly
+    # Stats panel: 2 (border) + 1 header + 1 blank + 3 instr rows + 1 cat row = 8
     layout.split_column(
         Layout(name="top", ratio=3),
         Layout(name="bottom", ratio=1),
-        Layout(name="stats", ratio=1),
+        Layout(name="stats", size=11),
         Layout(name="status", size=status_height),
     )
 
@@ -75,9 +76,9 @@ def render_debugger(state: DebuggerState) -> Layout:
     )
 
     layout["left_col"].split_column(
-        Layout(name="registers", ratio=2),
-        Layout(name="fpu", ratio=2),
-        Layout(name="npu", ratio=1),
+        Layout(name="registers"),
+        Layout(name="fpu"),
+        Layout(name="npu", size=11),
     )
 
     layout["bottom"].split_row(
