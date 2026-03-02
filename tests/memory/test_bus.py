@@ -118,3 +118,26 @@ class TestMemoryBus:
         bus.register(0x1000, 16, dev_a)
         with pytest.raises(ValueError, match="overlaps"):
             bus.register(0x1008, 16, dev_b)
+
+    def test_get_device_data_returns_buffer_and_base(self) -> None:
+        """get_device_data returns the device's raw buffer and base address."""
+        from riscv_npu.memory.ram import RAM
+
+        bus = MemoryBus()
+        ram = RAM(0x8000_0000, 1024)
+        bus.register(0x8000_0000, 1024, ram)
+
+        data, base = bus.get_device_data(0x8000_0000)
+        assert data is ram._data
+        assert base == 0x8000_0000
+
+        # Works for addresses within the device range, not just the base
+        data2, base2 = bus.get_device_data(0x8000_0100)
+        assert data2 is ram._data
+        assert base2 == 0x8000_0000
+
+    def test_get_device_data_unmapped_address_raises(self) -> None:
+        """get_device_data raises MemoryError for unmapped addresses."""
+        bus = MemoryBus()
+        with pytest.raises(MemoryError, match="Unmapped address"):
+            bus.get_device_data(0x9999)

@@ -1,6 +1,8 @@
 __pycache__/
 *.pyc
 *.pyo
+*.so
+src/riscv_npu/npu/_accel.c
 .venv/
 *.egg-info/
 dist/

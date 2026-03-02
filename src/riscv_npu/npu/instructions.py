@@ -2,10 +2,21 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ..cpu.decode import Instruction, to_signed
 from .engine import NpuState, acc_add, acc_reset, GELU_TABLE, exp_q16_16, rsqrt_q16_16
+
+try:
+    from ._accel import vmac_int8, vmul_int8, vreduce_int32, vmax_int32, vexp_int32
+    _USE_ACCEL = True
+except ImportError:
+    _USE_ACCEL = False
+    vmac_int8: Any = None
+    vmul_int8: Any = None
+    vreduce_int32: Any = None
+    vmax_int32: Any = None
+    vexp_int32: Any = None
 
 if TYPE_CHECKING:
     from ..cpu.cpu import CPU
@@ -103,13 +114,18 @@ def _exec_vmac(
     n = regs.read(inst.rd)
     addr_a = regs.read(inst.rs1)
     addr_b = regs.read(inst.rs2)
-    for i in range(n):
-        byte_a = mem.read8((addr_a + i) & 0xFFFFFFFF)
-        byte_b = mem.read8((addr_b + i) & 0xFFFFFFFF)
-        # Sign-extend bytes to int8
-        a = byte_a - 256 if byte_a >= 128 else byte_a
-        b = byte_b - 256 if byte_b >= 128 else byte_b
-        acc_add(npu, a * b)
+    if _USE_ACCEL:
+        data, base = mem.get_device_data(addr_a)
+        result = vmac_int8(data, addr_a - base, addr_b - base, n)
+        acc_add(npu, result)
+    else:
+        for i in range(n):
+            byte_a = mem.read8((addr_a + i) & 0xFFFFFFFF)
+            byte_b = mem.read8((addr_b + i) & 0xFFFFFFFF)
+            # Sign-extend bytes to int8
+            a = byte_a - 256 if byte_a >= 128 else byte_a
+            b = byte_b - 256 if byte_b >= 128 else byte_b
+            acc_add(npu, a * b)
 
 
 def _exec_relu(inst: Instruction, regs: 'RegisterFile') -> None:
@@ -241,12 +257,16 @@ def _exec_vexp(
     n = regs.read(inst.rd)
     addr_src = regs.read(inst.rs1)
     addr_dst = regs.read(inst.rs2)
-    for i in range(n):
-        src_addr = (addr_src + i * 4) & 0xFFFFFFFF
-        dst_addr = (addr_dst + i * 4) & 0xFFFFFFFF
-        val = mem.read32(src_addr)
-        result = exp_q16_16(val)
-        mem.write32(dst_addr, result & 0xFFFFFFFF)
+    if _USE_ACCEL:
+        data, base = mem.get_device_data(addr_src)
+        vexp_int32(data, addr_src - base, addr_dst - base, n)
+    else:
+        for i in range(n):
+            src_addr = (addr_src + i * 4) & 0xFFFFFFFF
+            dst_addr = (addr_dst + i * 4) & 0xFFFFFFFF
+            val = mem.read32(src_addr)
+            result = exp_q16_16(val)
+            mem.write32(dst_addr, result & 0xFFFFFFFF)
 
 
 def _exec_vrsqrt(
@@ -286,17 +306,21 @@ def _exec_vmul(
     addr_dst = regs.read(inst.rs2)
     # Scale factor from accumulator low word, interpreted as signed
     scale = to_signed(npu.acc_lo)
-    for i in range(n):
-        byte_val = mem.read8((addr_src + i) & 0xFFFFFFFF)
-        # Sign-extend byte to int8
-        src_signed = byte_val - 256 if byte_val >= 128 else byte_val
-        # Multiply and arithmetic right shift by 16
-        product = src_signed * scale
-        result = product >> 16  # Python >> on negative is arithmetic
-        # Clamp to int8 range
-        result = max(-128, min(127, result))
-        # Write as unsigned byte
-        mem.write8((addr_dst + i) & 0xFFFFFFFF, result & 0xFF)
+    if _USE_ACCEL:
+        data, base = mem.get_device_data(addr_src)
+        vmul_int8(data, addr_src - base, addr_dst - base, n, scale)
+    else:
+        for i in range(n):
+            byte_val = mem.read8((addr_src + i) & 0xFFFFFFFF)
+            # Sign-extend byte to int8
+            src_signed = byte_val - 256 if byte_val >= 128 else byte_val
+            # Multiply and arithmetic right shift by 16
+            product = src_signed * scale
+            result = product >> 16  # Python >> on negative is arithmetic
+            # Clamp to int8 range
+            result = max(-128, min(127, result))
+            # Write as unsigned byte
+            mem.write8((addr_dst + i) & 0xFFFFFFFF, result & 0xFF)
 
 
 def _exec_vreduce(
@@ -312,10 +336,14 @@ def _exec_vreduce(
     """
     n = regs.read(inst.rs2)
     addr_src = regs.read(inst.rs1)
-    total = 0
-    for i in range(n):
-        val = mem.read32((addr_src + i * 4) & 0xFFFFFFFF)
-        total += to_signed(val)
+    if _USE_ACCEL:
+        data, base = mem.get_device_data(addr_src)
+        total = vreduce_int32(data, addr_src - base, n)
+    else:
+        total = 0
+        for i in range(n):
+            val = mem.read32((addr_src + i * 4) & 0xFFFFFFFF)
+            total += to_signed(val)
     regs.write(inst.rd, total & 0xFFFFFFFF)
 
 
@@ -335,10 +363,14 @@ def _exec_vmax(
     if n == 0:
         regs.write(inst.rd, 0x80000000)
         return
-    max_val = -0x80000000  # Start with minimum int32
-    for i in range(n):
-        val = mem.read32((addr_src + i * 4) & 0xFFFFFFFF)
-        signed_val = to_signed(val)
-        if signed_val > max_val:
-            max_val = signed_val
+    if _USE_ACCEL:
+        data, base = mem.get_device_data(addr_src)
+        max_val = vmax_int32(data, addr_src - base, n)
+    else:
+        max_val = -0x80000000  # Start with minimum int32
+        for i in range(n):
+            val = mem.read32((addr_src + i * 4) & 0xFFFFFFFF)
+            signed_val = to_signed(val)
+            if signed_val > max_val:
+                max_val = signed_val
     regs.write(inst.rd, max_val & 0xFFFFFFFF)

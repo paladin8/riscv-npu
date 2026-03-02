@@ -2,11 +2,50 @@
 
 ## Methodology
 
-Profiled with Python 3.14 `cProfile` on a 100,000-cycle hot loop (ADDI/BEQ/JAL) and a 186-cycle Fibonacci program. The emulator executes approximately 230,000 instructions per second on a single core.
+Profiled with Python 3.14 `cProfile` and `scripts/bench.py` on firmware workloads and synthetic micro-benchmarks. Run benchmarks with:
 
-## Where Time Is Spent
+```
+uv run python scripts/bench.py                 # all workloads
+uv run python scripts/bench.py --cprofile mnist # cProfile a specific workload
+uv run python scripts/bench.py --micro-only     # just isolated component benchmarks
+```
 
-Profiling a 100,000-instruction workload shows the following breakdown by total time:
+## Current Throughput
+
+With all optimizations (bus delegation, device cache, slots dataclass, Cython NPU):
+
+| Workload      | Instructions/sec | Cycles | Instruction mix           |
+|---------------|------------------|--------|---------------------------|
+| cpu.step loop |          ~940K   | 200K   | ADDI/BNE tight loop       |
+| fibonacci     |          ~710K   | 59     | ADDI 59%, ADD 17%, BNE 17%|
+| sort          |          ~750K   | 336    | ADDI 37%, LW 17%, SW 12%  |
+| fpu_test      |          ~790K   | 5,348  | ADDI 33%, LBU 20%, BNE 17%|
+| mnist         |          ~900K   | 6,847  | ADDI 45%, BNE 14%, SB 13% |
+
+## Where Time Is Spent (current, post-optimization)
+
+The profile is now well-balanced across the CPU step pipeline. On the mnist workload (cProfile, with Cython acceleration compiled):
+
+| Component          | Function                      | Notes                               |
+|--------------------|-------------------------------|-------------------------------------|
+| CPU step overhead  | `cpu.step()`                  | Per-cycle bookkeeping               |
+| Instruction decode | `decode.decode()`             | Bit extraction + Instruction alloc  |
+| Memory read (fetch)| `bus.read32()`→`ram.read32()` | Single call via bus delegation      |
+| Execute dispatch   | `execute.execute()`           | if/elif chain, relatively cheap     |
+| Mnemonic classifier| `instruction_mnemonic()`      | ~3% overhead for stats tracking     |
+| NPU vector ops     | `_exec_vmac()` etc.           | Near-zero with Cython, ~50% without |
+
+### Key Observations
+
+1. **The CPU step loop is the bottleneck.** With NPU ops accelerated by Cython, no single component dominates — time is spread evenly across fetch, decode, execute, and per-step bookkeeping. This is the expected balanced state.
+
+2. **NPU vector ops are effectively free with Cython.** The `_accel.pyx` Cython module bypasses the bus entirely, operating directly on the RAM bytearray via typed memoryviews. VMAC dropped from 204K `bus.read8` calls to zero.
+
+3. **Without Cython, NPU vector loops dominate.** In pure Python, `_exec_vmac` alone accounts for ~50% of mnist execution time (204K `bus.read8` calls + 101K `acc_add` calls).
+
+## Pre-optimization Baseline
+
+The original profile (before any optimizations) on a 100K-instruction integer workload:
 
 | Component            | % of time | Function                   | Calls per step |
 |----------------------|-----------|----------------------------|----------------|
@@ -23,15 +62,7 @@ Profiling a 100,000-instruction workload shows the following breakdown by total 
 | Sign extension       |     2.3%  | `sign_extend()`            | 0-1            |
 | Register file        |     3.9%  | `read()` + `write()`       | 1-3            |
 
-### Key Observations
-
-1. **Instruction fetch is the biggest single cost**: `read32()` calls `read8()` four times, each of which does bounds checking via `_offset()`. A single 4-byte read path would cut 8 function calls per instruction fetch.
-
-2. **Instruction decoding and dataclass allocation are significant**: Creating a frozen `Instruction` dataclass on every cycle costs ~26% of total time (decode + `__init__`). A mutable struct or tuple return would avoid per-cycle allocation.
-
-3. **Execute dispatch is relatively cheap**: The if/elif chain in `execute()` is fast. Most time is in the actual operation handlers.
-
-4. **The mnemonic classifier adds ~3% overhead**: Acceptable for development; could be disabled in production mode.
+The original emulator executed approximately 230,000 instructions per second.
 
 ## NPU Instruction Profile
 
@@ -71,18 +102,31 @@ The NPU vector instructions (FVMAC, FVEXP, FVMUL) are the highest-value accelera
 
 8. **FRELU / RELU, CLAMP, QMUL**: Simple scalar operations that are already single-instruction in the emulator. Hardware cost is minimal.
 
-## Potential Software Optimizations
+## Implemented Optimizations
 
-These optimizations could improve emulator speed without changing the architecture:
+1. **Bus multi-byte delegation**: The bus detects devices with native `read16`/`read32`/`write16`/`write32` methods at registration time and delegates directly instead of composing from 4x `read8()`. RAM provides these natively via `int.from_bytes()` on its bytearray, so instruction fetch and data loads/stores skip 6 function calls per word access. `load_segment()` also delegates to the device's bulk load when available.
 
-1. **Word-aligned memory reads**: Replace 4x `read8()` with a direct `int.from_bytes()` on the RAM bytearray. Estimated 2-3x speedup for instruction fetch.
+2. **Device lookup fast-path**: `_find_device()` caches the last-hit `DeviceMapping` and checks it before scanning the device list. Since ~99% of accesses target RAM, this turns nearly every lookup into a single comparison.
 
-2. **Dispatch table instead of if/elif**: Replace the opcode if/elif chain with a function pointer array indexed by opcode. Reduces dispatch from O(N opcodes) to O(1).
+3. **Instruction `slots=True` dataclass**: Replaced `@dataclass(frozen=True)` with `@dataclass(slots=True)` on the `Instruction` class. The frozen variant uses `object.__setattr__` for each field during `__init__`, adding overhead to every decode cycle. `slots=True` gives the memory benefit of `__slots__` without the per-field cost.
 
-3. **Avoid Instruction dataclass allocation**: Use a reusable mutable object or return a tuple. Saves one object allocation per cycle (~11% of time).
+4. **Cython NPU vector acceleration**: The 10 NPU vector inner loops (VMAC, FVMAC, VEXP, FVEXP, VMUL, FVMUL, VREDUCE, FVREDUCE, VMAX, FVMAX) are implemented in Cython (`_accel.pyx`). The Cython kernels access the RAM bytearray directly via typed memoryviews, bypassing the bus/device lookup entirely. This eliminates ~7 Python function calls per vector element. Compile with `make accel`; without compilation, the emulator falls back to pure-Python loops transparently.
 
-4. **Inline device lookup**: Since most accesses hit RAM, add a fast path that skips the device list scan for addresses in the RAM range.
+   **Impact on mnist (NPU-heavy workload):**
 
-5. **Optional stats tracking**: Gate `instruction_mnemonic()` behind a flag to remove the ~3% overhead when statistics are not needed.
+   | Metric               | Pure Python | With Cython | Speedup |
+   |----------------------|-------------|-------------|---------|
+   | Instructions/sec     | 116K        | 900K        | 7.7x   |
+   | `bus.read8` calls    | 204,050     | 786         | 260x   |
+   | Total cProfile time  | 0.201s      | 0.027s      | 7.4x   |
+   | VMAC in top profile? | #1 (20%)    | Not in top 25 | --   |
 
-These optimizations are not implemented because correctness and readability take priority in an educational emulator. The architecture is designed to mirror how real hardware would work (fetch-decode-execute pipeline), not to maximize Python throughput.
+## Potential Further Optimizations
+
+These could improve emulator speed further but are not yet implemented:
+
+1. **Dispatch table instead of if/elif**: Replace the opcode if/elif chain with a function pointer array indexed by opcode. Reduces dispatch from O(N opcodes) to O(1).
+
+2. **Optional stats tracking**: Gate `instruction_mnemonic()` behind a flag to remove the ~3% overhead when statistics are not needed.
+
+These remain unimplemented because correctness and readability take priority in an educational emulator. The architecture is designed to mirror how real hardware would work (fetch-decode-execute pipeline), not to maximize Python throughput.

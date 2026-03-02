@@ -14,7 +14,7 @@ def to_signed(value: int) -> int:
     return value - 0x100000000 if value >= 0x80000000 else value
 
 
-@dataclass(frozen=True)
+@dataclass(slots=True)
 class Instruction:
     """Decoded RISC-V instruction."""
 

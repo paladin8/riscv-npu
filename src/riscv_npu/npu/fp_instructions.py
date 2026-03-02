@@ -6,8 +6,21 @@ import math
 import struct
 from typing import TYPE_CHECKING
 
+from typing import Any
+
 from ..cpu.decode import Instruction
 from .engine import NpuState, facc_add, facc_reset, fgelu
+
+try:
+    from ._accel import fvmac_f32, fvmul_f32, fvexp_f32, fvreduce_f32, fvmax_f32
+    _USE_ACCEL = True
+except ImportError:
+    _USE_ACCEL = False
+    fvmac_f32: Any = None
+    fvmul_f32: Any = None
+    fvexp_f32: Any = None
+    fvreduce_f32: Any = None
+    fvmax_f32: Any = None
 
 if TYPE_CHECKING:
     from ..cpu.cpu import CPU
@@ -127,10 +140,15 @@ def _exec_fvmac(
     n = regs.read(inst.rd)
     addr_a = regs.read(inst.rs1)
     addr_b = regs.read(inst.rs2)
-    for i in range(n):
-        a = _read_mem_f32(mem, (addr_a + i * 4) & 0xFFFFFFFF)
-        b = _read_mem_f32(mem, (addr_b + i * 4) & 0xFFFFFFFF)
-        facc_add(npu, float(a) * float(b))
+    if _USE_ACCEL:
+        data, base = mem.get_device_data(addr_a)
+        result = fvmac_f32(data, addr_a - base, addr_b - base, n)
+        facc_add(npu, result)
+    else:
+        for i in range(n):
+            a = _read_mem_f32(mem, (addr_a + i * 4) & 0xFFFFFFFF)
+            b = _read_mem_f32(mem, (addr_b + i * 4) & 0xFFFFFFFF)
+            facc_add(npu, float(a) * float(b))
 
 
 def _exec_frelu(inst: Instruction, fregs: FRegisterFile) -> None:
@@ -193,20 +211,24 @@ def _exec_fvexp(
     n = regs.read(inst.rd)
     addr_src = regs.read(inst.rs1)
     addr_dst = regs.read(inst.rs2)
-    for i in range(n):
-        src_addr = (addr_src + i * 4) & 0xFFFFFFFF
-        dst_addr = (addr_dst + i * 4) & 0xFFFFFFFF
-        val = _read_mem_f32(mem, src_addr)
-        if math.isnan(val):
-            result = val
-        elif math.isinf(val):
-            result = 0.0 if val < 0 else val
-        else:
-            try:
-                result = math.exp(val)
-            except OverflowError:
-                result = float('inf')
-        _write_mem_f32(mem, dst_addr, result)
+    if _USE_ACCEL:
+        data, base = mem.get_device_data(addr_src)
+        fvexp_f32(data, addr_src - base, addr_dst - base, n)
+    else:
+        for i in range(n):
+            src_addr = (addr_src + i * 4) & 0xFFFFFFFF
+            dst_addr = (addr_dst + i * 4) & 0xFFFFFFFF
+            val = _read_mem_f32(mem, src_addr)
+            if math.isnan(val):
+                result = val
+            elif math.isinf(val):
+                result = 0.0 if val < 0 else val
+            else:
+                try:
+                    result = math.exp(val)
+                except OverflowError:
+                    result = float('inf')
+            _write_mem_f32(mem, dst_addr, result)
 
 
 def _exec_fvrsqrt(
@@ -252,12 +274,16 @@ def _exec_fvmul(
     addr_dst = regs.read(inst.rs2)
     # Round facc to float32 for scaling (handles overflow to +/-inf)
     scale_bits = _f64_to_f32_bits(npu.facc)
-    scale = struct.unpack('<f', struct.pack('<I', scale_bits))[0]
-    for i in range(n):
-        src_addr = (addr_src + i * 4) & 0xFFFFFFFF
-        dst_addr = (addr_dst + i * 4) & 0xFFFFFFFF
-        val = _read_mem_f32(mem, src_addr)
-        _write_mem_f32(mem, dst_addr, val * scale)
+    if _USE_ACCEL:
+        data, base = mem.get_device_data(addr_src)
+        fvmul_f32(data, addr_src - base, addr_dst - base, n, scale_bits)
+    else:
+        scale = struct.unpack('<f', struct.pack('<I', scale_bits))[0]
+        for i in range(n):
+            src_addr = (addr_src + i * 4) & 0xFFFFFFFF
+            dst_addr = (addr_dst + i * 4) & 0xFFFFFFFF
+            val = _read_mem_f32(mem, src_addr)
+            _write_mem_f32(mem, dst_addr, val * scale)
 
 
 def _exec_fvreduce(
@@ -274,10 +300,14 @@ def _exec_fvreduce(
     """
     n = regs.read(inst.rs2)
     addr_src = regs.read(inst.rs1)
-    total = 0.0  # double-precision accumulation
-    for i in range(n):
-        val = _read_mem_f32(mem, (addr_src + i * 4) & 0xFFFFFFFF)
-        total += float(val)
+    if _USE_ACCEL:
+        data, base = mem.get_device_data(addr_src)
+        total = fvreduce_f32(data, addr_src - base, n)
+    else:
+        total = 0.0  # double-precision accumulation
+        for i in range(n):
+            val = _read_mem_f32(mem, (addr_src + i * 4) & 0xFFFFFFFF)
+            total += float(val)
     fregs.write_bits(inst.rd, _f64_to_f32_bits(total))
 
 
@@ -298,12 +328,20 @@ def _exec_fvmax(
     if n == 0:
         fregs.write_float(inst.rd, float('-inf'))
         return
-    max_val = float('-inf')
-    for i in range(n):
-        val = _read_mem_f32(mem, (addr_src + i * 4) & 0xFFFFFFFF)
-        if math.isnan(val):
+    if _USE_ACCEL:
+        data, base = mem.get_device_data(addr_src)
+        max_val = fvmax_f32(data, addr_src - base, n)
+        if math.isnan(max_val):
             fregs.write_float(inst.rd, float('nan'))
-            return
-        if val > max_val:
-            max_val = val
-    fregs.write_float(inst.rd, max_val)
+        else:
+            fregs.write_float(inst.rd, max_val)
+    else:
+        max_val = float('-inf')
+        for i in range(n):
+            val = _read_mem_f32(mem, (addr_src + i * 4) & 0xFFFFFFFF)
+            if math.isnan(val):
+                fregs.write_float(inst.rd, float('nan'))
+                return
+            if val > max_val:
+                max_val = val
+        fregs.write_float(inst.rd, max_val)
