@@ -199,3 +199,43 @@ class TestCPUSyscall:
         # Should halt via the "no mtvec" path since handler returned False
         assert cpu.halted is True
         assert cpu.cycle_count == 2
+
+
+class TestInstructionStats:
+    """Tests for CPU instruction statistics tracking."""
+
+    def test_instruction_stats_empty_initially(self) -> None:
+        """A fresh CPU has no instruction stats."""
+        cpu = _make_cpu()
+        assert cpu.instruction_stats == {}
+
+    def test_instruction_stats_counts_each_step(self) -> None:
+        """After executing instructions, stats reflect counts per mnemonic."""
+        cpu = _make_cpu()
+        # ADDI x1, x0, 5; ADDI x2, x0, 10; ADD x3, x1, x2
+        _write_program(cpu, [
+            _i(5, 0, 0b000, 1),      # ADDI x1, x0, 5
+            _i(10, 0, 0b000, 2),     # ADDI x2, x0, 10
+            _r(0, 2, 1, 0b000, 3),   # ADD x3, x1, x2
+        ])
+        cpu.step()
+        cpu.step()
+        cpu.step()
+        assert cpu.instruction_stats["ADDI"] == 2
+        assert cpu.instruction_stats["ADD"] == 1
+        assert len(cpu.instruction_stats) == 2
+
+    def test_instruction_stats_accumulate_across_run(self) -> None:
+        """Stats accumulate over the entire run."""
+        cpu = _make_cpu()
+        # 4 NOPs (ADDI x0, x0, 0) then ECALL
+        _write_program(cpu, [
+            _i(0, 0, 0b000, 0),
+            _i(0, 0, 0b000, 0),
+            _i(0, 0, 0b000, 0),
+            _i(0, 0, 0b000, 0),
+            _i(0, 0, 0b000, 0, OP_SYSTEM),  # ECALL (halt)
+        ])
+        cpu.run()
+        assert cpu.instruction_stats["ADDI"] == 4
+        assert cpu.instruction_stats["ECALL"] == 1

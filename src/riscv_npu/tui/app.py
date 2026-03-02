@@ -22,6 +22,7 @@ from .disasm import disassemble_region
 from .memory import format_hex_dump
 from .npu import format_npu_state
 from .registers import format_float_registers, format_registers
+from .stats import format_instruction_stats
 
 # System constants (match cli.py)
 _BASE = 0x80000000
@@ -42,6 +43,8 @@ def render_debugger(state: DebuggerState) -> Layout:
         +------------------+------------------+
         |   Memory         |   Output (UART)  |
         +------------------+------------------+
+        |   Instruction Statistics            |
+        +-------------------------------------+
         |   Status bar (full width)           |
         +-------------------------------------+
 
@@ -62,6 +65,7 @@ def render_debugger(state: DebuggerState) -> Layout:
     layout.split_column(
         Layout(name="top", ratio=3),
         Layout(name="bottom", ratio=1),
+        Layout(name="stats", ratio=1),
         Layout(name="status", size=status_height),
     )
 
@@ -123,6 +127,10 @@ def render_debugger(state: DebuggerState) -> Layout:
     if len(uart_lines) > 8:
         uart_lines = uart_lines[-8:]
     layout["output"].update(Panel("\n".join(uart_lines), title="Output"))
+
+    # Instruction statistics panel
+    stats_text = format_instruction_stats(state.cpu.instruction_stats)
+    layout["stats"].update(Panel(stats_text, title="Instruction Statistics"))
 
     # Status bar
     halted_str = "HALTED" if state.cpu.halted else "RUNNING"

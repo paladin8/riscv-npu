@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from ..memory.bus import MemoryBus
 from ..npu.engine import NpuState
-from .decode import decode
+from .decode import decode, instruction_mnemonic
 from .execute import execute
 from .fpu import CSR_FCSR, CSR_FFLAGS, CSR_FRM, FpuState
 from .registers import RegisterFile
@@ -43,6 +43,7 @@ class CPU:
         self.tohost_addr: int = 0  # Memory-mapped tohost address (set by test runner)
         self.npu_state = NpuState()
         self.fpu_state = FpuState()
+        self.instruction_stats: dict[str, int] = {}
         self.syscall_handler: SyscallHandler | None = None
         self.csrs: dict[int, int] = {
             CSR_MHARTID: 0,  # Hart 0
@@ -77,9 +78,15 @@ class CPU:
             self.csrs[addr] = value
 
     def step(self) -> None:
-        """Execute one instruction cycle: fetch, decode, execute."""
+        """Execute one instruction cycle: fetch, decode, execute.
+
+        Also records the instruction mnemonic in ``instruction_stats``
+        for per-instruction profiling.
+        """
         word = self.memory.read32(self.pc)
         inst = decode(word)
+        mnemonic = instruction_mnemonic(inst)
+        self.instruction_stats[mnemonic] = self.instruction_stats.get(mnemonic, 0) + 1
         self.pc = execute(inst, self)
         self.cycle_count += 1
 
