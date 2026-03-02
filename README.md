@@ -2,6 +2,21 @@
 
 RISC-V (RV32IMF) emulator in Python with custom NPU instructions for neural network inference.
 
+## Features
+
+| Feature                      | Details                                                          |
+|------------------------------|------------------------------------------------------------------|
+| ISA support                  | RV32I (41 instructions) + M extension (8) + F extension (26)    |
+| Custom NPU (integer)         | 14 instructions for quantized int8 inference (opcode 0x0B)      |
+| Custom NPU (floating-point)  | 10 instructions for float32 inference (opcode 0x2B)             |
+| Total instructions           | 99 (75 standard RISC-V + 24 custom NPU)                        |
+| Memory model                 | 4 MB RAM, memory-mapped UART (16550), memory-mapped NPU regs   |
+| ELF loader                   | Full ELF32 RISC-V parser with symbol table lookup               |
+| Syscalls                     | Linux ABI: read, write, exit, brk                               |
+| TUI debugger                 | Registers, FPU, NPU, disassembly, memory, UART, instruction stats |
+| Firmware examples            | 9 programs from fibonacci to a trained transformer LM           |
+| Test coverage                | 900+ tests, all passing                                         |
+
 ## Prerequisites
 
 - Python 3.14+
@@ -32,7 +47,7 @@ Launch the interactive debugger:
 uv run python -m riscv_npu debug firmware/hello/hello.elf
 ```
 
-The debugger displays panels for registers, disassembly, memory hex dump, UART output, FPU state, and NPU state (integer + float accumulators, vector registers). Changed values are highlighted after each step.
+The debugger displays panels for registers, disassembly, memory hex dump, UART output, FPU state, NPU state (integer + float accumulators, vector registers), and instruction statistics. Changed values are highlighted after each step.
 
 Use `--write SYMBOL:FILE` to load file contents into memory at an ELF symbol's address before execution. This is useful for injecting test data (e.g. weight files or input images) into firmware buffers.
 
@@ -58,19 +73,19 @@ Firmware programs are C code that runs **on** the emulated CPU. Each program liv
 cd firmware/hello && make
 ```
 
-This requires a RISC-V cross-compiler. All firmware is compiled with `-march=rv32imf -mabi=ilp32f` — the emulator does **not** support the A (atomics) or C (compressed) extensions.
+This requires a RISC-V cross-compiler. All firmware is compiled with `-march=rv32imf -mabi=ilp32f` -- the emulator does **not** support the A (atomics) or C (compressed) extensions.
 
 ### Example programs
 
-| Program       | Description                                                      |
-|---------------|------------------------------------------------------------------|
-| `fibonacci`   | Computes fib(10), returns result in `a0`                         |
-| `hello`       | Prints "Hello, World!" via write syscall                         |
-| `uart-hello`  | Prints via direct UART register access (memory-mapped I/O)       |
-| `sort`        | Insertion sort, returns 1 on success                             |
-| `newton`      | Square roots via Newton's method, verified against fsqrt         |
-| `fpu_test`    | Tests all RV32F floating-point instructions (34 checks)          |
-| `npu_test`    | Exercises all NPU instructions (MACC, RELU, QMUL, CLAMP, GELU)   |
+| Program       | Description                                                          |
+|---------------|----------------------------------------------------------------------|
+| `fibonacci`   | Computes fib(10), returns result in `a0`                             |
+| `hello`       | Prints "Hello, World!" via write syscall                             |
+| `uart-hello`  | Prints via direct UART register access (memory-mapped I/O)           |
+| `sort`        | Insertion sort, returns 1 on success                                 |
+| `newton`      | Square roots via Newton's method, verified against fsqrt             |
+| `fpu_test`    | Tests all RV32F floating-point instructions (34 checks)              |
+| `npu_test`    | Exercises all NPU instructions (MACC, RELU, QMUL, CLAMP, GELU)      |
 | `mnist`       | Quantized 784->128->10 MLP, classifies handwritten digits            |
 | `transformer` | Float32 char-level transformer LM, trained on Shakespeare (FP NPU)   |
 
@@ -96,7 +111,7 @@ cd firmware/transformer && make
 uv run python -m riscv_npu run firmware/transformer/transformer.elf
 ```
 
-The transformer generates text autoregressively — it echoes the input prompt, then prints generated characters on a second line prefixed with `>`.
+The transformer generates text autoregressively -- it echoes the input prompt, then prints generated characters on a second line prefixed with `>`.
 
 ## Testing
 
@@ -109,14 +124,93 @@ uv run pytest -x           # stop on first failure
 ## Architecture
 
 ```
-src/riscv_npu/
-  cpu/       — decode + execute (the core loop)
-  memory/    — bus, RAM, device base class
-  devices/   — UART, NPU (memory-mapped I/O)
-  loader/    — ELF parser
-  syscall/   — ecall dispatch
-  npu/       — custom NPU instruction execution + compute engine
-  tools/     — weight export, assembler utilities
-  tui/       — Rich-based terminal debugger
-firmware/    — C programs that run on the emulator
+                      +---------------------------+
+                      |          CLI              |
+                      |   run / debug commands    |
+                      +----------+----------------+
+                                 |
+                      +----------v----------------+
+                      |        CPU Core           |
+                      |  fetch -> decode -> exec  |
+                      +--+-----+-----+-----+-----+
+                         |     |     |     |
+               +---------+  +-+--+  |  +--+--------+
+               |             |     |     |          |
+        +------v------+ +---v--+  |  +--v---+ +----v-----+
+        | RegisterFile | | FPU |  |  | NPU  | | Syscall  |
+        | x0-x31       | | f0-f31| |  | int  | | Handler  |
+        +--------------+ | fcsr | |  | fp   | +----------+
+                         +------+ |  +------+
+                                  |
+                      +-----------v-----------+
+                      |      Memory Bus       |
+                      +--+--------+--------+--+
+                         |        |        |
+                  +------v--+ +--v-----+ +-v----------+
+                  |   RAM   | | UART   | | NPU MMIO   |
+                  | 4 MB    | | 16550  | | debug regs  |
+                  +---------+ +--------+ +------------+
 ```
+
+### Source layout
+
+```
+src/riscv_npu/
+  cpu/       -- decode + execute (the core loop)
+  memory/    -- bus, RAM, device base class
+  devices/   -- UART, NPU (memory-mapped I/O)
+  loader/    -- ELF parser
+  syscall/   -- ecall dispatch
+  npu/       -- custom NPU instruction execution + compute engine
+  tools/     -- weight export, assembler utilities
+  tui/       -- Rich-based terminal debugger
+firmware/    -- C programs that run on the emulator
+```
+
+## NPU instruction set
+
+The NPU provides hardware-accelerated neural network operations via two custom instruction sets encoded in the RISC-V custom opcode space.
+
+### Integer NPU (opcode 0x0B) -- 14 instructions
+
+Designed for quantized int8 inference with a 64-bit integer accumulator. Key instructions:
+
+| Instruction   | Operation                                                  |
+|---------------|------------------------------------------------------------|
+| NPU.VMAC      | Vector dot product: acc += dot(int8[rs1], int8[rs2], n)    |
+| NPU.RSTACC    | Read accumulator to rd, reset to zero                      |
+| NPU.RELU      | Scalar ReLU: rd = max(signed(rs1), 0)                      |
+| NPU.GELU      | Scalar GELU via 256-entry lookup table                     |
+| NPU.QMUL      | Quantized multiply: rd = (rs1 * rs2) >> 8                  |
+| NPU.CLAMP     | Clamp to int8 range: rd = clamp(rs1, -128, 127)            |
+| NPU.VEXP      | Vector exp over Q16.16 array                               |
+| NPU.VRSQRT    | Scalar 1/sqrt in Q16.16                                    |
+| NPU.VMUL      | Vector scale by accumulator value                          |
+| NPU.VREDUCE   | Vector sum reduction                                       |
+| NPU.VMAX      | Vector max reduction                                       |
+| NPU.MACC      | Scalar multiply-accumulate                                 |
+| NPU.LDVEC     | Load 4 bytes into vector register                          |
+| NPU.STVEC     | Store vector register to memory                            |
+
+### Floating-point NPU (opcode 0x2B) -- 10 instructions
+
+Designed for float32 inference with a float64 accumulator. Key instructions:
+
+| Instruction   | Operation                                                  |
+|---------------|------------------------------------------------------------|
+| NPU.FVMAC     | FP vector dot product: facc += dot(f32[rs1], f32[rs2], n)  |
+| NPU.FRSTACC   | Read facc (rounded to f32) to f[rd], reset to zero         |
+| NPU.FRELU     | FP scalar ReLU: f[rd] = max(f[rs1], 0.0)                   |
+| NPU.FGELU     | FP scalar GELU at full precision                           |
+| NPU.FVEXP     | Vector exp over float32 array                              |
+| NPU.FVRSQRT   | Scalar 1/sqrt from memory to float register                |
+| NPU.FVMUL     | Vector scale by facc value                                 |
+| NPU.FVREDUCE  | Vector sum reduction to float register                     |
+| NPU.FVMAX     | Vector max reduction to float register                     |
+| NPU.FMACC     | Scalar FP multiply-accumulate                              |
+
+## Documentation
+
+- [ISA Reference](docs/isa-reference.md) -- complete quick reference for all 99 instructions
+- [NPU Design](docs/npu-design.md) -- detailed NPU architecture, encoding, C intrinsics, and inference pipelines
+- [Performance Profile](docs/performance.md) -- profiling analysis and hardware acceleration recommendations
