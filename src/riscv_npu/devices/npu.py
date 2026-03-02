@@ -1,18 +1,23 @@
 """NPU device: memory-mapped control/status registers at 0x20000000.
 
 Provides read-only access to NPU state for the TUI debugger and
-diagnostic firmware. Writing to offset 0 resets the accumulator.
+diagnostic firmware. Writing to offset 0 resets the integer accumulator.
+Writing to offset 0x18 resets the FP accumulator.
 
 Register map:
-    0x00-0x03: acc_lo (32-bit, read-only; write resets accumulator)
+    0x00-0x03: acc_lo (32-bit, read-only; write resets int accumulator)
     0x04-0x07: acc_hi (32-bit, read-only)
     0x08-0x0B: vreg[0] (4 bytes, packed int8)
     0x0C-0x0F: vreg[1] (4 bytes, packed int8)
     0x10-0x13: vreg[2] (4 bytes, packed int8)
     0x14-0x17: vreg[3] (4 bytes, packed int8)
+    0x18-0x1B: facc_lo (32-bit, FP acc low bits; write resets FP accumulator)
+    0x1C-0x1F: facc_hi (32-bit, FP acc high bits)
 """
 
 from __future__ import annotations
+
+import struct
 
 from ..npu.engine import NpuState, acc_reset
 
@@ -55,6 +60,11 @@ class NpuDevice:
             byte_idx = vreg_offset % 4
             val = self._state.vreg[vreg_idx][byte_idx]
             return val & 0xFF
+        elif 24 <= offset < 32:
+            # facc: float64 as two little-endian 32-bit words (IEEE 754 double)
+            facc_bytes = struct.pack('<d', self._state.facc)
+            byte_idx = offset - 24
+            return facc_bytes[byte_idx]
         return 0
 
     def write8(self, addr: int, value: int) -> None:
@@ -70,3 +80,5 @@ class NpuDevice:
         offset = addr - self._base
         if offset == 0:
             acc_reset(self._state)
+        elif offset == 0x18:
+            self._state.facc = 0.0

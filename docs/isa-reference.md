@@ -231,7 +231,7 @@ Out-of-range conversions saturate: NaN → INT_MAX (signed) or UINT_MAX (unsigne
 
 FCLASS.S bit assignments: 0=neg inf, 1=neg normal, 2=neg subnormal, 3=neg zero, 4=pos zero, 5=pos subnormal, 6=pos normal, 7=pos inf, 8=signaling NaN, 9=quiet NaN.
 
-## Custom NPU instructions
+## Custom NPU instructions (integer)
 
 Opcode `0x0B` (custom-0 space).
 
@@ -262,3 +262,40 @@ Opcode `0x0B` (custom-0 space).
 |--------|-----------|------------------------------------------------|
 | 110    | NPU.LDVEC | vreg[rd%4] = mem32[rs1 + sext(imm)] as 4×int8  |
 | 111    | NPU.STVEC | mem32[rs1 + sext(imm)] = vreg[rs2%4] as 4×int8 |
+
+## Custom FP NPU instructions
+
+Opcode `0x2B` (custom-1 space). All R-type format.
+
+### NPU FP internal state
+- facc: float64 (double-precision) accumulator
+
+FP NPU instructions use the f0-f31 float register file for scalar operands and results. Integer registers (x0-x31) are used for memory addresses and element counts. No separate FP vector registers are needed.
+
+### Encoding format
+
+```
+R-type: funct7[31:25]  rs2[24:20]  rs1[19:15]  funct3[14:12]  rd[11:7]  0x2B[6:0]
+```
+
+Register conventions for vector memory operations: `rd` = element count (from integer register), `rs1` = source address (integer register), `rs2` = destination address (integer register). Scalar results write to float register f[rd].
+
+### R-type compute (opcode 0x2B, funct3 = 000)
+
+| funct7  | funct3 | name          | op                                                     |
+|---------|--------|---------------|--------------------------------------------------------|
+| 0000000 | 000    | NPU.FMACC     | facc += f[rs1] × f[rs2] (double-precision accumulate)  |
+| 0000001 | 000    | NPU.FVMAC     | facc += dot(mem_f32[rs1..+rd], mem_f32[rs2..+rd])      |
+| 0000010 | 000    | NPU.FVEXP     | mem_f32[rs2+i*4] = exp(mem_f32[rs1+i*4]), i in 0..rd-1 |
+| 0000011 | 000    | NPU.FVRSQRT   | f[rd] = 1/sqrt(mem_f32[rs1])                           |
+| 0000100 | 000    | NPU.FVMUL     | mem_f32[rs2+i*4] = mem_f32[rs1+i*4] × (float32)facc    |
+| 0000101 | 000    | NPU.FVREDUCE  | f[rd] = sum(mem_f32[rs1+i*4]), i in 0..rs2-1           |
+| 0000110 | 000    | NPU.FVMAX     | f[rd] = max(mem_f32[rs1+i*4]), i in 0..rs2-1           |
+
+### R-type scalar activations (opcode 0x2B)
+
+| funct7  | funct3 | name         | op                             |
+|---------|--------|--------------|--------------------------------|
+| 0000000 | 001    | NPU.FRELU    | f[rd] = max(f[rs1], +0.0)      |
+| 0000000 | 100    | NPU.FGELU    | f[rd] = gelu(f[rs1]) (FP32)    |
+| 0000000 | 101    | NPU.FRSTACC  | f[rd] = (float32)facc; facc = 0 |

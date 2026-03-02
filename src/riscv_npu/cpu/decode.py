@@ -41,6 +41,7 @@ OP_JALR = 0x67
 OP_SYSTEM = 0x73
 OP_FENCE = 0x0F
 OP_NPU = 0x0B
+OP_FP_NPU = 0x2B
 OP_LOAD_FP = 0x07
 OP_STORE_FP = 0x27
 OP_FMADD = 0x43
@@ -80,6 +81,11 @@ def decode(word: int) -> Instruction:
             imm = sign_extend((funct7 << 5) | rd, 12)
             return Instruction(opcode=opcode, rs1=rs1, rs2=rs2, imm=imm,
                                funct3=funct3, funct7=funct7)
+
+    elif opcode == OP_FP_NPU:
+        # FP NPU instructions (opcode 0x2B): all R-type
+        return Instruction(opcode=opcode, rd=rd, rs1=rs1, rs2=rs2,
+                           funct3=funct3, funct7=funct7)
 
     elif opcode in (OP_I_ARITH, OP_LOAD, OP_JALR, OP_SYSTEM, OP_FENCE):
         # I-type: imm = sign_extend(inst[31:20], 12)

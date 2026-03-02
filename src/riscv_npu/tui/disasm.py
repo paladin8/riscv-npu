@@ -20,6 +20,7 @@ from ..cpu.decode import (
     OP_SYSTEM,
     OP_FENCE,
     OP_NPU,
+    OP_FP_NPU,
     OP_LOAD_FP,
     OP_STORE_FP,
     OP_FMADD,
@@ -126,6 +127,25 @@ _NPU_MNEMONICS: dict[int, str] = {
 }
 
 
+# FP NPU mnemonics: funct3 -> name (for non-funct7 instructions)
+_FP_NPU_MNEMONICS: dict[int, str] = {
+    0b001: "NPU.FRELU",
+    0b100: "NPU.FGELU",
+    0b101: "NPU.FRSTACC",
+}
+
+# FP NPU funct3=0 sub-dispatch by funct7
+_FP_NPU_F3_0_MNEMONICS: dict[int, str] = {
+    0: "NPU.FMACC",
+    1: "NPU.FVMAC",
+    2: "NPU.FVEXP",
+    3: "NPU.FVRSQRT",
+    4: "NPU.FVMUL",
+    5: "NPU.FVREDUCE",
+    6: "NPU.FVMAX",
+}
+
+
 # Float ABI register names for disassembly
 _FLOAT_ABI: list[str] = [
     "ft0", "ft1", "ft2", "ft3", "ft4", "ft5", "ft6", "ft7",
@@ -182,6 +202,8 @@ def disassemble_instruction(inst: Instruction) -> str:
         return _disasm_system(inst)
     elif inst.opcode == OP_NPU:
         return _disasm_npu(inst)
+    elif inst.opcode == OP_FP_NPU:
+        return _disasm_fp_npu(inst)
     elif inst.opcode == OP_FENCE:
         return "FENCE"
     elif inst.opcode == OP_LOAD_FP:
@@ -324,6 +346,44 @@ def _disasm_npu_f3_0(inst: Instruction) -> str:
         return f"{name} {_reg(inst.rd)}, {_reg(inst.rs1)}, {_reg(inst.rs2)}"
     elif f7 == 6:  # VMAX: rd=result, rs1=addr, rs2=count
         return f"{name} {_reg(inst.rd)}, {_reg(inst.rs1)}, {_reg(inst.rs2)}"
+    else:
+        return name
+
+
+def _disasm_fp_npu(inst: Instruction) -> str:
+    """Disassemble an FP NPU instruction (opcode 0x2B)."""
+    f3 = inst.funct3
+    if f3 == 0b000:
+        return _disasm_fp_npu_f3_0(inst)
+    name = _FP_NPU_MNEMONICS.get(f3, f"FP_NPU?{f3}")
+    if f3 == 0b001:  # FRELU: f[rd], f[rs1]
+        return f"{name} {_freg(inst.rd)}, {_freg(inst.rs1)}"
+    elif f3 == 0b100:  # FGELU: f[rd], f[rs1]
+        return f"{name} {_freg(inst.rd)}, {_freg(inst.rs1)}"
+    elif f3 == 0b101:  # FRSTACC: f[rd]
+        return f"{name} {_freg(inst.rd)}"
+    else:
+        return name
+
+
+def _disasm_fp_npu_f3_0(inst: Instruction) -> str:
+    """Disassemble funct3=0 FP NPU instructions (dispatched by funct7)."""
+    f7 = inst.funct7
+    name = _FP_NPU_F3_0_MNEMONICS.get(f7, f"NPU.FF7?{f7}")
+    if f7 == 0:  # FMACC: f[rs1], f[rs2] (no rd output)
+        return f"{name} {_freg(inst.rs1)}, {_freg(inst.rs2)}"
+    elif f7 == 1:  # FVMAC: x[rd]=count, x[rs1]=addr_a, x[rs2]=addr_b
+        return f"{name} {_reg(inst.rd)}, {_reg(inst.rs1)}, {_reg(inst.rs2)}"
+    elif f7 == 2:  # FVEXP: x[rd]=count, x[rs1]=src, x[rs2]=dst
+        return f"{name} {_reg(inst.rd)}, {_reg(inst.rs1)}, {_reg(inst.rs2)}"
+    elif f7 == 3:  # FVRSQRT: f[rd]=result, x[rs1]=addr
+        return f"{name} {_freg(inst.rd)}, {_reg(inst.rs1)}"
+    elif f7 == 4:  # FVMUL: x[rd]=count, x[rs1]=src, x[rs2]=dst
+        return f"{name} {_reg(inst.rd)}, {_reg(inst.rs1)}, {_reg(inst.rs2)}"
+    elif f7 == 5:  # FVREDUCE: f[rd]=result, x[rs1]=addr, x[rs2]=count
+        return f"{name} {_freg(inst.rd)}, {_reg(inst.rs1)}, {_reg(inst.rs2)}"
+    elif f7 == 6:  # FVMAX: f[rd]=result, x[rs1]=addr, x[rs2]=count
+        return f"{name} {_freg(inst.rd)}, {_reg(inst.rs1)}, {_reg(inst.rs2)}"
     else:
         return name
 

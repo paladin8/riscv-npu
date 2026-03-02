@@ -1,6 +1,7 @@
 """NPU compute engine: accumulator, GELU table, vector registers."""
 
 import math
+import struct
 from dataclasses import dataclass, field
 
 
@@ -11,14 +12,16 @@ def _make_vregs() -> list[list[int]]:
 
 @dataclass
 class NpuState:
-    """NPU internal state: 64-bit accumulator and 4 vector registers.
+    """NPU internal state: integer accumulator, FP accumulator, and vector registers.
 
-    The accumulator is stored as two 32-bit halves (acc_lo, acc_hi).
+    The integer accumulator is stored as two 32-bit halves (acc_lo, acc_hi).
+    The FP accumulator is a float64 (double-precision) for FP32 dot products.
     Vector registers each hold 4 int8 values (-128..127).
     """
 
     acc_lo: int = 0
     acc_hi: int = 0
+    facc: float = 0.0
     vreg: list[list[int]] = field(default_factory=_make_vregs)
 
 
@@ -143,6 +146,53 @@ def exp_q16_16(x: int) -> int:
     result = round(result_float * Q16_ONE)
     # Clamp to positive 32-bit range
     return max(0, min(0x7FFFFFFF, result)) & 0xFFFFFFFF
+
+
+def facc_add(state: NpuState, value: float) -> None:
+    """Add a float64 value to the FP accumulator.
+
+    Args:
+        state: NPU state.
+        value: Value to add (double precision).
+    """
+    state.facc += value
+
+
+def facc_reset(state: NpuState) -> float:
+    """Reset the FP accumulator to 0.0 and return the old value.
+
+    The returned value is the raw float64 accumulator contents.
+    Callers should round to float32 as needed (e.g., FRSTACC).
+
+    Returns:
+        The previous facc value.
+    """
+    old = state.facc
+    state.facc = 0.0
+    return old
+
+
+def facc_to_f32_bits(state: NpuState) -> int:
+    """Read the FP accumulator rounded to float32 as IEEE 754 bits.
+
+    Returns:
+        32-bit unsigned integer with IEEE 754 single-precision bits.
+    """
+    return struct.unpack('<I', struct.pack('<f', state.facc))[0]
+
+
+def fgelu(x: float) -> float:
+    """Compute GELU activation on a single-precision float value.
+
+    Uses the exact formula: gelu(x) = 0.5 * x * (1 + erf(x / sqrt(2))).
+
+    Args:
+        x: Input value (float).
+
+    Returns:
+        GELU(x) as a float.
+    """
+    return 0.5 * x * (1.0 + math.erf(x / math.sqrt(2.0)))
 
 
 def rsqrt_q16_16(x: int) -> int:

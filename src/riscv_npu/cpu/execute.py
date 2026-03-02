@@ -20,6 +20,7 @@ from .decode import (
     OP_SYSTEM,
     OP_FENCE,
     OP_NPU,
+    OP_FP_NPU,
     OP_LOAD_FP,
     OP_STORE_FP,
     OP_FMADD,
@@ -32,6 +33,7 @@ from .decode import (
 from .registers import RegisterFile
 from ..memory.bus import MemoryBus
 from ..npu.instructions import execute_npu
+from ..npu.fp_instructions import execute_fp_npu
 from .fpu_execute import execute_fpu
 
 if TYPE_CHECKING:
@@ -84,6 +86,9 @@ def execute(inst: Instruction, cpu: CPU) -> int:
 
     elif inst.opcode == OP_NPU:
         return execute_npu(inst, cpu)
+
+    elif inst.opcode == OP_FP_NPU:
+        return execute_fp_npu(inst, cpu)
 
     elif inst.opcode in (
         OP_LOAD_FP, OP_STORE_FP, OP_FMADD, OP_FMSUB,
