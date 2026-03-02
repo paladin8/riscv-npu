@@ -559,14 +559,49 @@ denom = NPU_FVREDUCE(exp_buf, N)    // sum of exponentials
 NPU_FVMUL(exp_buf, output, N)       // divide by sum (multiply by 1/sum)
 ```
 
+### FP32 RMSNorm
+
+```
+// sum of squares
+NPU_FVMAC(x, x, N)              // facc = sum(x[i]^2)
+sum_sq = NPU_FRSTACC()           // read sum, reset accumulator
+mean_sq = sum_sq / N + eps       // compute mean + epsilon
+scale = NPU_FVRSQRT(&mean_sq)   // 1/sqrt(mean_sq)
+// output[i] = input[i] * gamma[i] * scale
+for i in 0..N-1:
+    output[i] = input[i] * gamma[i] * scale
+```
+
+### FP32 Transformer Pipeline
+
+The character-level transformer uses all 10 FP NPU instructions for a complete float32 inference pipeline:
+
+- **Embedding**: Simple float addition (token_embed + pos_embed)
+- **Linear layers**: FVMAC + FRSTACC for dot products, FADD.S for bias
+- **RMSNorm**: FVMAC (sum of squares), FRSTACC, FVRSQRT (1/sqrt scale)
+- **Attention**: FVMAC for Q.K dot products, softmax for attention weights, weighted sum of V
+- **Softmax**: FVMAX (numerical stability), FVEXP (exponentiate), FVREDUCE (sum), FMACC + FVMUL (normalize)
+- **FFN**: Linear + FGELU activation + Linear
+- **Residual**: Simple float addition (no clamping needed)
+
+Model dimensions: vocab=256, embed_dim=64, heads=4, layers=2, context=32, ff_dim=256 (~135K params, ~527KB float32).
+
+Implementation files:
+- Python reference: `src/riscv_npu/tools/transformer.py`
+- Weight export: `src/riscv_npu/tools/export_transformer_weights.py`
+- C firmware: `firmware/transformer/main.c`
+
 ## Implementation
 
-| Component                            | File                                | Role                          |
-|--------------------------------------|-------------------------------------|-------------------------------|
-| NPU state + accumulator + GELU table | `src/riscv_npu/npu/engine.py`       | Dataclass and pure functions  |
-| Integer instruction dispatch         | `src/riscv_npu/npu/instructions.py` | Called from CPU execute loop  |
-| FP instruction dispatch              | `src/riscv_npu/npu/fp_instructions.py` | Called from CPU execute loop |
-| Memory-mapped device                 | `src/riscv_npu/devices/npu.py`      | Bus-attached register reads   |
-| Decoder (opcode 0x0B, 0x2B)          | `src/riscv_npu/cpu/decode.py`       | R/I/S-type format selection   |
-| Integer C intrinsics                 | `firmware/common/npu.h`             | `.insn` inline assembly       |
-| FP C intrinsics                      | `firmware/common/npu_fp.h`          | `.insn` inline assembly       |
+| Component                            | File                                                  | Role                         |
+|--------------------------------------|-------------------------------------------------------|------------------------------|
+| NPU state + accumulator + GELU table | `src/riscv_npu/npu/engine.py`                         | Dataclass and pure functions |
+| Integer instruction dispatch         | `src/riscv_npu/npu/instructions.py`                   | Called from CPU execute loop |
+| FP instruction dispatch              | `src/riscv_npu/npu/fp_instructions.py`                | Called from CPU execute loop |
+| Memory-mapped device                 | `src/riscv_npu/devices/npu.py`                        | Bus-attached register reads  |
+| Decoder (opcode 0x0B, 0x2B)          | `src/riscv_npu/cpu/decode.py`                         | R/I/S-type format selection  |
+| Integer C intrinsics                 | `firmware/common/npu.h`                               | `.insn` inline assembly      |
+| FP C intrinsics                      | `firmware/common/npu_fp.h`                            | `.insn` inline assembly      |
+| Float transformer reference          | `src/riscv_npu/tools/transformer.py`                  | Python validation reference  |
+| Float weight export                  | `src/riscv_npu/tools/export_transformer_weights.py`   | Train + export float32       |
+| Transformer firmware                 | `firmware/transformer/main.c`                         | C firmware using FP NPU      |
