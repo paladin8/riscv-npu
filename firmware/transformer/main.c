@@ -1,8 +1,8 @@
 /* Tiny transformer character-level LM demo (float32).
  *
- * Reads input tokens from the test_tokens buffer (written by the test
- * harness), runs one forward pass of the float32 transformer, and
- * prints the predicted next token (byte value 0-255) to stdout.
+ * Reads a prompt from test_tokens, then autoregressively generates
+ * tokens until the context window (32 positions) is full.  Each
+ * generated token is printed as its raw character.
  *
  * Architecture: embed_dim=64, heads=4, layers=2, vocab=256, ctx=32
  * All weights and activations are float32. Uses FP NPU instructions
@@ -19,9 +19,11 @@ long write(int fd, const void *buf, long len);
 void _exit(int code);
 
 /* Input buffer: test harness writes token IDs here.
- * test_n_tokens: number of tokens to process. */
+ * test_n_tokens: prompt length.
+ * test_n_generate: tokens to generate (0 = fill context). */
 unsigned char test_tokens[CONTEXT_LEN];
 int test_n_tokens;
+int test_n_generate;
 
 /* Scratch buffers (in .bss) */
 static float x[EMBED_DIM];           /* Current token embedding */
@@ -44,22 +46,8 @@ static float probs_buf[CONTEXT_LEN];
 /* Utility                                                             */
 /* ------------------------------------------------------------------ */
 
-static void print_int(int n) {
-    char buf[8];
-    int len = 0;
-    if (n >= 100) {
-        buf[len++] = '0' + (n / 100);
-        n %= 100;
-        buf[len++] = '0' + (n / 10);
-        buf[len++] = '0' + (n % 10);
-    } else if (n >= 10) {
-        buf[len++] = '0' + (n / 10);
-        buf[len++] = '0' + (n % 10);
-    } else {
-        buf[len++] = '0' + n;
-    }
-    buf[len++] = '\n';
-    write(1, buf, len);
+static void print_char(unsigned char c) {
+    write(1, &c, 1);
 }
 
 /* ------------------------------------------------------------------ */
@@ -122,6 +110,7 @@ static void softmax(float *scores, int n, float *probs) {
     float one = 1.0f;
     NPU_FMACC(inv, one);                /* facc = 1/sum */
     NPU_FVMUL(probs, probs, n);         /* probs[i] *= facc */
+    NPU_FRSTACC();                      /* clear facc so callers start clean */
 }
 
 /* ------------------------------------------------------------------ */
@@ -220,96 +209,128 @@ static void add_residual(float *x_inout, const float *residual, int dim) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Main: transformer forward pass                                      */
+/* Forward: run one token through the transformer at position pos      */
 /* ------------------------------------------------------------------ */
 
-int main(void) {
-    int n_tokens = test_n_tokens;
-    if (n_tokens <= 0 || n_tokens > CONTEXT_LEN) {
-        _exit(1);
+static void forward_step(unsigned char token, int pos) {
+    /* Embedding: token_embed[token] + pos_embed[pos] */
+    for (int d = 0; d < EMBED_DIM; d++) {
+        x[d] = TOKEN_EMBED[token][d] + POS_EMBED[pos][d];
     }
 
-    /* Process each token */
-    for (int pos = 0; pos < n_tokens; pos++) {
-        unsigned char token = test_tokens[pos];
+    /* Layer 0 */
+    {
+        float residual[EMBED_DIM];
+        for (int d = 0; d < EMBED_DIM; d++) residual[d] = x[d];
 
-        /* Embedding: token_embed[token] + pos_embed[pos] */
-        for (int d = 0; d < EMBED_DIM; d++) {
-            x[d] = TOKEN_EMBED[token][d] + POS_EMBED[pos][d];
-        }
+        rmsnorm(x, L0_LN1_GAMMA, normed, EMBED_DIM);
+        float attn_result[EMBED_DIM];
+        attention(normed, 0, pos,
+                  (const float *)L0_WQ, L0_BQ,
+                  (const float *)L0_WK, L0_BK,
+                  (const float *)L0_WV, L0_BV,
+                  (const float *)L0_WO, L0_BO,
+                  attn_result);
+        for (int d = 0; d < EMBED_DIM; d++) x[d] = attn_result[d];
+        add_residual(x, residual, EMBED_DIM);
 
-        /* Layer 0 */
-        {
-            float residual[EMBED_DIM];
-            for (int d = 0; d < EMBED_DIM; d++) residual[d] = x[d];
-
-            /* Attention sub-layer */
-            rmsnorm(x, L0_LN1_GAMMA, normed, EMBED_DIM);
-            float attn_result[EMBED_DIM];
-            attention(normed, 0, pos,
-                      (const float *)L0_WQ, L0_BQ,
-                      (const float *)L0_WK, L0_BK,
-                      (const float *)L0_WV, L0_BV,
-                      (const float *)L0_WO, L0_BO,
-                      attn_result);
-            for (int d = 0; d < EMBED_DIM; d++) x[d] = attn_result[d];
-            add_residual(x, residual, EMBED_DIM);
-
-            /* FFN sub-layer */
-            for (int d = 0; d < EMBED_DIM; d++) residual[d] = x[d];
-            rmsnorm(x, L0_LN2_GAMMA, normed, EMBED_DIM);
-            float ff_result[EMBED_DIM];
-            feedforward(normed,
-                        (const float *)L0_W1, L0_B1,
-                        (const float *)L0_W2, L0_B2,
-                        ff_result);
-            for (int d = 0; d < EMBED_DIM; d++) x[d] = ff_result[d];
-            add_residual(x, residual, EMBED_DIM);
-        }
-
-        /* Layer 1 */
-        {
-            float residual[EMBED_DIM];
-            for (int d = 0; d < EMBED_DIM; d++) residual[d] = x[d];
-
-            rmsnorm(x, L1_LN1_GAMMA, normed, EMBED_DIM);
-            float attn_result[EMBED_DIM];
-            attention(normed, 1, pos,
-                      (const float *)L1_WQ, L1_BQ,
-                      (const float *)L1_WK, L1_BK,
-                      (const float *)L1_WV, L1_BV,
-                      (const float *)L1_WO, L1_BO,
-                      attn_result);
-            for (int d = 0; d < EMBED_DIM; d++) x[d] = attn_result[d];
-            add_residual(x, residual, EMBED_DIM);
-
-            for (int d = 0; d < EMBED_DIM; d++) residual[d] = x[d];
-            rmsnorm(x, L1_LN2_GAMMA, normed, EMBED_DIM);
-            float ff_result[EMBED_DIM];
-            feedforward(normed,
-                        (const float *)L1_W1, L1_B1,
-                        (const float *)L1_W2, L1_B2,
-                        ff_result);
-            for (int d = 0; d < EMBED_DIM; d++) x[d] = ff_result[d];
-            add_residual(x, residual, EMBED_DIM);
-        }
+        for (int d = 0; d < EMBED_DIM; d++) residual[d] = x[d];
+        rmsnorm(x, L0_LN2_GAMMA, normed, EMBED_DIM);
+        float ff_result[EMBED_DIM];
+        feedforward(normed,
+                    (const float *)L0_W1, L0_B1,
+                    (const float *)L0_W2, L0_B2,
+                    ff_result);
+        for (int d = 0; d < EMBED_DIM; d++) x[d] = ff_result[d];
+        add_residual(x, residual, EMBED_DIM);
     }
 
-    /* Final RMSNorm */
+    /* Layer 1 */
+    {
+        float residual[EMBED_DIM];
+        for (int d = 0; d < EMBED_DIM; d++) residual[d] = x[d];
+
+        rmsnorm(x, L1_LN1_GAMMA, normed, EMBED_DIM);
+        float attn_result[EMBED_DIM];
+        attention(normed, 1, pos,
+                  (const float *)L1_WQ, L1_BQ,
+                  (const float *)L1_WK, L1_BK,
+                  (const float *)L1_WV, L1_BV,
+                  (const float *)L1_WO, L1_BO,
+                  attn_result);
+        for (int d = 0; d < EMBED_DIM; d++) x[d] = attn_result[d];
+        add_residual(x, residual, EMBED_DIM);
+
+        for (int d = 0; d < EMBED_DIM; d++) residual[d] = x[d];
+        rmsnorm(x, L1_LN2_GAMMA, normed, EMBED_DIM);
+        float ff_result[EMBED_DIM];
+        feedforward(normed,
+                    (const float *)L1_W1, L1_B1,
+                    (const float *)L1_W2, L1_B2,
+                    ff_result);
+        for (int d = 0; d < EMBED_DIM; d++) x[d] = ff_result[d];
+        add_residual(x, residual, EMBED_DIM);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Predict: run final norm + output projection, return argmax token    */
+/* ------------------------------------------------------------------ */
+
+static int predict(void) {
     rmsnorm(x, LN_FINAL_GAMMA, normed, EMBED_DIM);
 
-    /* Output projection: find argmax of logits */
     float max_logit = -1e30f;
-    int predicted = 0;
+    int best = 0;
     for (int v = 0; v < VOCAB_SIZE; v++) {
         NPU_FVMAC(&OUTPUT_PROJ[v][0], normed, EMBED_DIM);
         float logit = NPU_FRSTACC() + OUTPUT_BIAS[v];
         if (logit > max_logit) {
             max_logit = logit;
-            predicted = v;
+            best = v;
         }
     }
+    return best;
+}
 
-    print_int(predicted);
+/* ------------------------------------------------------------------ */
+/* Main: process prompt, then generate tokens autoregressively         */
+/* ------------------------------------------------------------------ */
+
+int main(void) {
+    int prompt_len = test_n_tokens;
+    if (prompt_len <= 0 || prompt_len > CONTEXT_LEN) {
+        _exit(1);
+    }
+
+    /* How many tokens to generate (default: fill the context window) */
+    int n_gen = test_n_generate;
+    if (n_gen <= 0) {
+        n_gen = CONTEXT_LEN;
+    }
+
+    /* Echo the prompt */
+    write(1, test_tokens, prompt_len);
+    write(1, "\n> ", 3);
+
+    /* Process prompt tokens */
+    for (int pos = 0; pos < prompt_len; pos++) {
+        forward_step(test_tokens[pos], pos);
+    }
+
+    /* Autoregressive generation */
+    for (int i = 0; i < n_gen; i++) {
+        int token = predict();
+        print_char((unsigned char)token);
+
+        /* Feed predicted token back; stop if context window is full */
+        int next_pos = prompt_len + i;
+        if (next_pos >= CONTEXT_LEN) {
+            break;
+        }
+        forward_step((unsigned char)token, next_pos);
+    }
+    print_char('\n');
+
     return 0;
 }

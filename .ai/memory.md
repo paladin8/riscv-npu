@@ -1,7 +1,8 @@
 # Project State
 
 ## Status
-Phase 7 FP transformer COMPLETE. 812 passing, 0 failures.
+Phase 7 FP transformer COMPLETE. 820 passing, 0 failures.
+Trained on TinyShakespeare (data/shakespeare.txt). GPU training supported.
 
 ## What's implemented
 - RV32IMF: 75 instructions (41 base + 8 M extension + 26 F extension)
@@ -25,3 +26,4 @@ Phase 7 FP transformer COMPLETE. 812 passing, 0 failures.
 - Transformer: all float32, no int8/Q16.16/shifts/scales/clamp
 - Memory float read/write: struct.unpack('<f', struct.pack('<I', bits))[0]
 - Toolchain: riscv64-unknown-elf-gcc -march=rv32imf -mabi=ilp32f
+- CRITICAL: NPU_FVMAC/FMACC accumulate onto facc without clearing. Functions that use FVMAC must ensure facc=0 on entry. softmax() must clear facc at end (after FVMUL).

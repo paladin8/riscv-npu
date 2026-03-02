@@ -1,11 +1,12 @@
 """Export trained transformer weights as float32 C arrays and test data for firmware.
 
-Trains a tiny character-level transformer on a simple text corpus
+Trains a tiny character-level transformer on TinyShakespeare (~1MB)
 and exports raw float32 weights:
   - firmware/transformer/weights.h: C header with float32 weight arrays
   - firmware/transformer/test_data.py: Python module with test sequences + expected outputs
 
 No quantization, no int8, no Q16.16, no fake quantize. Pure float32 throughout.
+Uses GPU if available.
 
 Usage:
     uv run --extra torch python -m riscv_npu.tools.export_transformer_weights
@@ -62,6 +63,9 @@ class RMSNorm(nn.Module):
         return x * rms * self.weight
 
 
+DROPOUT = 0.1
+
+
 class MultiHeadAttention(nn.Module):
     """Multi-head attention with standard nn.Linear projections."""
 
@@ -76,6 +80,8 @@ class MultiHeadAttention(nn.Module):
         self.wk = nn.Linear(dim, dim)
         self.wv = nn.Linear(dim, dim)
         self.wo = nn.Linear(dim, dim)
+        self.attn_drop = nn.Dropout(DROPOUT)
+        self.resid_drop = nn.Dropout(DROPOUT)
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
         """Multi-head attention forward pass.
@@ -105,13 +111,14 @@ class MultiHeadAttention(nn.Module):
             scores = scores.masked_fill(mask.unsqueeze(0).unsqueeze(0), float("-inf"))
 
         attn_weights = F.softmax(scores, dim=-1)
+        attn_weights = self.attn_drop(attn_weights)
 
         # Weighted sum of V
         out = torch.matmul(attn_weights, v)  # (B, n_heads, T, head_dim)
         out = out.transpose(1, 2).contiguous().view(B, T, D)
 
         # Output projection
-        out = self.wo(out)
+        out = self.resid_drop(self.wo(out))
         return out
 
 
@@ -126,6 +133,7 @@ class TransformerBlock(nn.Module):
         self.ff_w1 = nn.Linear(dim, ff_dim)
         self.ff_act = nn.GELU()
         self.ff_w2 = nn.Linear(ff_dim, dim)
+        self.ff_drop = nn.Dropout(DROPOUT)
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
         """Forward pass with residual connections."""
@@ -136,6 +144,7 @@ class TransformerBlock(nn.Module):
         normed = self.ln2(x)
         ff_out = self.ff_w1(normed)
         ff_out = self.ff_act(ff_out)
+        ff_out = self.ff_drop(ff_out)
         ff_out = self.ff_w2(ff_out)
         x = x + ff_out
 
@@ -178,25 +187,41 @@ class TinyTransformer(nn.Module):
 # Dataset
 # ---------------------------------------------------------------------------
 
-# Simple text corpus for training -- repetitive patterns that a tiny model can learn
-TRAIN_TEXT = """the quick brown fox jumps over the lazy dog
-a quick brown fox jumps over a lazy dog
-the quick red fox jumps over the lazy cat
-a quick red fox jumps over a lazy cat
-the slow brown fox runs past the lazy dog
-a slow brown fox runs past a lazy dog
-the quick brown dog jumps over the lazy fox
-hello world hello world hello world
-abcdefghijklmnopqrstuvwxyz abcdefghijklmnopqrstuvwxyz
-the cat sat on the mat the cat sat on the mat
-""" * 100  # Repeat for sufficient training data
+DATA_DIR = Path(__file__).parent.parent.parent.parent / "data"
+SHAKESPEARE_PATH = DATA_DIR / "shakespeare.txt"
+
+# Fallback corpus used only when shakespeare.txt is missing (e.g. in tests)
+_FALLBACK_TEXT = (
+    "the quick brown fox jumps over the lazy dog\n"
+    "a quick brown fox jumps over a lazy dog\n"
+    "the quick red fox jumps over the lazy cat\n"
+    "hello world hello world hello world\n"
+    "the cat sat on the mat the cat sat on the mat\n"
+) * 200
+
+
+def _load_corpus() -> str:
+    """Load training corpus.
+
+    Uses TinyShakespeare (~1MB) if available, otherwise falls back to a
+    small built-in corpus.
+
+    Returns:
+        Training text as a string.
+    """
+    if SHAKESPEARE_PATH.exists():
+        text = SHAKESPEARE_PATH.read_text(encoding="utf-8")
+        print(f"  Loaded {SHAKESPEARE_PATH} ({len(text):,} chars)")
+        return text
+    print("  Warning: data/shakespeare.txt not found, using fallback corpus")
+    return _FALLBACK_TEXT
 
 
 class CharDataset(Dataset):
     """Character-level dataset for next-token prediction."""
 
     def __init__(self, text: str, seq_len: int) -> None:
-        self.data = [ord(c) for c in text]
+        self.data = torch.tensor([ord(c) for c in text], dtype=torch.long)
         self.seq_len = seq_len
 
     def __len__(self) -> int:
@@ -204,52 +229,110 @@ class CharDataset(Dataset):
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         chunk = self.data[idx:idx + self.seq_len + 1]
-        x = torch.tensor(chunk[:-1], dtype=torch.long)
-        y = torch.tensor(chunk[1:], dtype=torch.long)
-        return x, y
+        return chunk[:-1], chunk[1:]
 
 
 # ---------------------------------------------------------------------------
 # Training
 # ---------------------------------------------------------------------------
 
-def train_model(epochs: int = 10, lr: float = 3e-4) -> TinyTransformer:
-    """Train the character-level transformer with standard float training.
+def _get_device() -> torch.device:
+    """Pick the best available device."""
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")
 
-    No QAT, no fake quantization -- standard Adam training.
+
+def train_model(epochs: int = 50, lr: float = 3e-4) -> TinyTransformer:
+    """Train the character-level transformer on TinyShakespeare.
+
+    Uses GPU if available, AdamW with cosine LR schedule, and gradient
+    clipping for stable training on real text.
 
     Args:
         epochs: Number of training epochs.
-        lr: Learning rate for Adam optimizer.
+        lr: Peak learning rate for AdamW optimizer.
 
     Returns:
-        Trained model in eval mode.
+        Trained model in eval mode (on CPU).
     """
-    dataset = CharDataset(TRAIN_TEXT, CONTEXT_LEN)
-    loader = DataLoader(dataset, batch_size=64, shuffle=True, drop_last=True)
+    device = _get_device()
+    print(f"  Device: {device}")
 
-    model = TinyTransformer()
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    corpus = _load_corpus()
+
+    # 90/10 train/val split
+    split = int(len(corpus) * 0.9)
+    train_dataset = CharDataset(corpus[:split], CONTEXT_LEN)
+    val_dataset = CharDataset(corpus[split:], CONTEXT_LEN)
+
+    train_loader = DataLoader(
+        train_dataset, batch_size=128, shuffle=True, drop_last=True,
+        num_workers=0, pin_memory=(device.type == "cuda"),
+    )
+    val_loader = DataLoader(
+        val_dataset, batch_size=128, shuffle=False, drop_last=True,
+        num_workers=0,
+    )
+
+    model = TinyTransformer().to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.1)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
     criterion = nn.CrossEntropyLoss()
+
+    best_val_loss = float("inf")
+    best_state: dict[str, Any] = {}
 
     model.train()
     for epoch in range(epochs):
+        # Training
         total_loss = 0.0
         n_batches = 0
-        for x, y in loader:
+        for x, y in train_loader:
+            x, y = x.to(device), y.to(device)
             optimizer.zero_grad()
-            logits = model(x)  # (B, T, V)
+            logits = model(x)
             loss = criterion(logits.view(-1, VOCAB_SIZE), y.view(-1))
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             total_loss += loss.item()
             n_batches += 1
 
-        avg_loss = total_loss / max(1, n_batches)
-        print(f"  Epoch {epoch + 1}/{epochs}: loss={avg_loss:.4f}")
+        scheduler.step()
+        train_loss = total_loss / max(1, n_batches)
+
+        # Validation
+        model.eval()
+        val_loss = 0.0
+        val_batches = 0
+        with torch.no_grad():
+            for x, y in val_loader:
+                x, y = x.to(device), y.to(device)
+                logits = model(x)
+                loss = criterion(logits.view(-1, VOCAB_SIZE), y.view(-1))
+                val_loss += loss.item()
+                val_batches += 1
+        val_loss /= max(1, val_batches)
+        model.train()
+
+        lr_now = scheduler.get_last_lr()[0]
+        print(
+            f"  Epoch {epoch + 1:3d}/{epochs}: "
+            f"train={train_loss:.4f}  val={val_loss:.4f}  lr={lr_now:.2e}"
+        )
+
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+
+    # Restore best checkpoint
+    if best_state:
+        model.load_state_dict(best_state)
+        print(f"  Restored best checkpoint (val_loss={best_val_loss:.4f})")
 
     model.eval()
-    return model
+    return model.cpu()
 
 
 # ---------------------------------------------------------------------------
@@ -524,9 +607,11 @@ def export_test_data(
         path: Output file path.
         num_sequences: Number of test sequences to export.
     """
-    # Generate test sequences from the training text
-    test_chars = TRAIN_TEXT[:CONTEXT_LEN * num_sequences * 2]
-    test_tokens = [ord(c) for c in test_chars]
+    # Generate test sequences from the corpus (use val split for fairness)
+    corpus = _load_corpus()
+    split = int(len(corpus) * 0.9)
+    test_text = corpus[split:]
+    test_tokens = [ord(c) for c in test_text]
 
     sequences = []
     float_preds = []
@@ -568,8 +653,8 @@ def main() -> None:
     firmware_dir = Path(__file__).parent.parent.parent.parent / "firmware" / "transformer"
     firmware_dir.mkdir(parents=True, exist_ok=True)
 
-    print("Training tiny transformer (char-level LM)...")
-    model = train_model(epochs=10)
+    print("Training tiny transformer on TinyShakespeare...")
+    model = train_model(epochs=50)
 
     print("\nExtracting float32 weights...")
     weights = extract_weights(model)

@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import struct
+
 from ..npu.engine import NpuState, acc_get64
 
 
 def format_npu_state(npu: NpuState) -> str:
-    """Format NPU state (accumulator + vector registers) for display.
+    """Format NPU state (accumulators + vector registers) for display.
 
-    Shows the 64-bit accumulator as hex and signed decimal, and all 4 vector
-    registers as int8 arrays. Non-zero values are highlighted with Rich markup
-    ``[bold yellow]...[/bold yellow]``.
+    Shows the integer and float accumulators side-by-side on one line,
+    followed by the 4 vector registers. Non-zero values are highlighted
+    with Rich markup ``[bold yellow]...[/bold yellow]``.
 
     Args:
         npu: The current NPU state.
@@ -20,16 +22,29 @@ def format_npu_state(npu: NpuState) -> str:
     """
     lines: list[str] = []
 
-    # Accumulator
+    # Accumulators — side by side
     acc64 = acc_get64(npu)
     acc_hex = f"0x{npu.acc_hi:08X}_{npu.acc_lo:08X}"
-    acc_line = f"  {acc_hex}  ({acc64})"
+    int_val = f"int: {acc_hex} ({acc64})"
+
+    try:
+        f32 = struct.unpack('<f', struct.pack('<f', npu.facc))[0]
+    except OverflowError:
+        f32 = float('inf') if npu.facc > 0 else float('-inf')
+    fp_val = f"facc: {npu.facc:.8g} (f32: {f32:.6g})"
+
     if npu.acc_lo != 0 or npu.acc_hi != 0:
-        lines.append("[bold yellow]Accumulator[/bold yellow]")
-        lines.append(f"[bold yellow]{acc_line}[/bold yellow]")
+        int_part = f"[bold yellow]{int_val}[/bold yellow]"
     else:
-        lines.append("Accumulator")
-        lines.append(acc_line)
+        int_part = int_val
+
+    if npu.facc != 0.0:
+        fp_part = f"[bold yellow]{fp_val}[/bold yellow]"
+    else:
+        fp_part = fp_val
+
+    lines.append("Accumulators")
+    lines.append(f"  {int_part}   {fp_part}")
 
     lines.append("")
 

@@ -32,7 +32,7 @@ Launch the interactive debugger:
 uv run python -m riscv_npu debug firmware/hello/hello.elf
 ```
 
-The debugger displays four panels: registers, disassembly, memory hex dump, and UART output. Changed registers are highlighted after each step.
+The debugger displays panels for registers, disassembly, memory hex dump, UART output, FPU state, and NPU state (integer + float accumulators, vector registers). Changed values are highlighted after each step.
 
 Use `--write SYMBOL:FILE` to load file contents into memory at an ELF symbol's address before execution. This is useful for injecting test data (e.g. weight files or input images) into firmware buffers.
 
@@ -71,18 +71,18 @@ This requires a RISC-V cross-compiler. All firmware is compiled with `-march=rv3
 | `newton`      | Square roots via Newton's method, verified against fsqrt         |
 | `fpu_test`    | Tests all RV32F floating-point instructions (34 checks)          |
 | `npu_test`    | Exercises all NPU instructions (MACC, RELU, QMUL, CLAMP, GELU)   |
-| `mnist`       | Quantized 784->128->10 MLP, classifies handwritten digits        |
-| `transformer` | Tiny char-level transformer LM (2 layers, 4 heads, embed_dim=64) |
+| `mnist`       | Quantized 784->128->10 MLP, classifies handwritten digits            |
+| `transformer` | Float32 char-level transformer LM, trained on Shakespeare (FP NPU)   |
 
 ### Generating weights
 
-The `mnist` and `transformer` firmware require exported weight files before compiling. These scripts train a model, quantize to int8, and write a `weights.h` C header into the firmware directory.
+The `mnist` and `transformer` firmware require exported weight files before compiling.
 
 ```bash
-# MNIST MLP weights (~100KB)
+# MNIST MLP weights (~100KB, int8 quantized)
 uv run --extra torch python -m riscv_npu.tools.export_mnist_weights
 
-# Transformer weights (~136KB)
+# Transformer weights (~527KB, float32, trained on TinyShakespeare)
 uv run --extra torch python -m riscv_npu.tools.export_transformer_weights
 ```
 
@@ -95,6 +95,8 @@ uv run python -m riscv_npu run firmware/mnist/mnist.elf
 cd firmware/transformer && make
 uv run python -m riscv_npu run firmware/transformer/transformer.elf
 ```
+
+The transformer generates text autoregressively — it echoes the input prompt, then prints generated characters on a second line prefixed with `>`.
 
 ## Testing
 

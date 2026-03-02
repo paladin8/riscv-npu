@@ -20,10 +20,10 @@ class TestFormatNpuState:
         result = format_npu_state(npu)
         assert "[bold yellow]" not in result
 
-    def test_nonzero_accumulator_highlighted(self) -> None:
+    def test_nonzero_int_acc_highlighted(self) -> None:
         npu = NpuState(acc_lo=0xFF)
         result = format_npu_state(npu)
-        assert "[bold yellow]Accumulator[/bold yellow]" in result
+        assert "[bold yellow]int: " in result
         assert "0x00000000_000000FF" in result
         assert "(255)" in result
 
@@ -31,7 +31,7 @@ class TestFormatNpuState:
         npu = NpuState(acc_hi=0x00000003, acc_lo=0x000000FF)
         result = format_npu_state(npu)
         assert "0x00000003_000000FF" in result
-        assert "[bold yellow]" in result
+        assert "[bold yellow]int:" in result
 
     def test_negative_accumulator(self) -> None:
         npu = NpuState()
@@ -39,7 +39,6 @@ class TestFormatNpuState:
         result = format_npu_state(npu)
         assert "0xFFFFFFFF_FFFFFFFF" in result
         assert "(-1)" in result
-        assert "[bold yellow]" in result
 
     def test_large_positive_accumulator(self) -> None:
         npu = NpuState()
@@ -53,10 +52,8 @@ class TestFormatNpuState:
         npu.vreg[1] = [10, -20, 127, -128]
         result = format_npu_state(npu)
         lines = result.split("\n")
-        # v0 should NOT be highlighted (all zeros)
         v0_line = [l for l in lines if "v0:" in l][0]
         assert "[bold yellow]" not in v0_line
-        # v1 SHOULD be highlighted
         v1_line = [l for l in lines if "v1:" in l][0]
         assert "[bold yellow]" in v1_line
 
@@ -74,14 +71,14 @@ class TestFormatNpuState:
         for i in range(4):
             assert f"v{i}:" in result
 
-    def test_accumulator_zero_vreg_nonzero(self) -> None:
+    def test_int_acc_zero_vreg_nonzero(self) -> None:
         npu = NpuState()
         npu.vreg[0] = [1, 2, 3, 4]
         result = format_npu_state(npu)
-        # Accumulator section should NOT be highlighted
-        lines = result.split("\n")
-        assert lines[0] == "Accumulator"
+        # int acc should not be highlighted
+        assert "[bold yellow]int:" not in result
         # v0 should be highlighted
+        lines = result.split("\n")
         v0_line = [l for l in lines if "v0:" in l][0]
         assert "[bold yellow]" in v0_line
 
@@ -100,5 +97,54 @@ class TestFormatNpuState:
     def test_sections_present(self) -> None:
         npu = NpuState()
         result = format_npu_state(npu)
-        assert "Accumulator" in result
+        assert "Accumulators" in result
         assert "Vector Registers" in result
+
+    def test_both_accumulators_on_same_line(self) -> None:
+        npu = NpuState()
+        result = format_npu_state(npu)
+        lines = result.split("\n")
+        acc_line = [l for l in lines if "int:" in l][0]
+        assert "facc:" in acc_line
+
+    def test_facc_zero_no_highlighting(self) -> None:
+        npu = NpuState()
+        result = format_npu_state(npu)
+        assert "facc: 0" in result
+        assert "[bold yellow]facc:" not in result
+
+    def test_facc_nonzero_highlighted(self) -> None:
+        npu = NpuState(facc=3.14)
+        result = format_npu_state(npu)
+        assert "[bold yellow]facc:" in result
+        assert "3.14" in result
+
+    def test_facc_shows_f32_rounded(self) -> None:
+        npu = NpuState(facc=1.0)
+        result = format_npu_state(npu)
+        assert "f32:" in result
+
+    def test_facc_large_value(self) -> None:
+        npu = NpuState(facc=1e30)
+        result = format_npu_state(npu)
+        assert "1e+30" in result or "1e+030" in result
+
+    def test_facc_negative(self) -> None:
+        npu = NpuState(facc=-42.5)
+        result = format_npu_state(npu)
+        assert "-42.5" in result
+        assert "[bold yellow]facc:" in result
+
+    def test_independent_highlighting(self) -> None:
+        """Int acc non-zero, facc zero: only int part highlighted."""
+        npu = NpuState(acc_lo=1)
+        result = format_npu_state(npu)
+        assert "[bold yellow]int:" in result
+        assert "[bold yellow]facc:" not in result
+
+    def test_independent_highlighting_fp_only(self) -> None:
+        """Int acc zero, facc non-zero: only facc part highlighted."""
+        npu = NpuState(facc=1.0)
+        result = format_npu_state(npu)
+        assert "[bold yellow]int:" not in result
+        assert "[bold yellow]facc:" in result
