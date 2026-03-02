@@ -1,246 +1,369 @@
-# Phase 7: Transformer Extension
+# Phase 7: Floating-Point Transformer
 
 ## Goal
-Tiny character-level transformer runs on emulator. Adds 5 new NPU vector instructions to accelerate transformer operations (softmax, RMSNorm, elementwise ops).
+Tiny character-level transformer runs on emulator using FP NPU instructions. All weights and activations are float32 — no quantization. Demonstrates the FP NPU instruction set (opcode 0x2B) as a practical neural network accelerator.
 
 ## Design Decisions
 
 1. **Task**: Character-level language model (predict next character). Byte-level vocab (256 entries), no tokenizer needed.
-2. **Normalization**: RMSNorm (not LayerNorm). Simpler -- no mean subtraction, just scale by 1/sqrt(mean(x^2)). Key operation is reciprocal square root (VRSQRT).
-3. **New NPU instructions**: 5 vector primitives under funct3=0 with new funct7 values (accelerator-style, extending the MACC/VMAC pattern):
-   - VEXP (funct7=2) -- vector exponential approximation (for softmax)
-   - VRSQRT (funct7=3) -- vector reciprocal square root (for RMSNorm)
-   - VMUL (funct7=4) -- vector elementwise multiply
-   - VREDUCE (funct7=5) -- vector sum reduction
-   - VMAX (funct7=6) -- vector max reduction
-4. **Precision**: int8 weights, int32 intermediate values. VMAC accumulates Q*K^T in int32. Requantize to int8 only after softmax for V projection. Softmax operates on int32 scores, outputs int8 probabilities.
-5. **Model**: Embedding dim 64, 4 heads (head_dim=16), 2 layers, byte-level vocab (256), context 32 tokens, ~200K params, ~200KB int8.
-6. **Fixed-point format**: New vector ops use Q16.16 fixed-point for intermediate precision. VEXP input/output are Q16.16. VRSQRT input is Q16.16 (mean of squares), output is Q16.16 scale factor. VMUL multiplies int8 * Q16.16 scale -> int8 result (with shift).
-7. **Softmax strategy**: Compute max (VMAX), subtract max (prevents overflow), exponentiate (VEXP), sum (VREDUCE), divide by sum (multiply by reciprocal via VMUL variant). All in int32/Q16.16 domain. Final output quantized to uint8 (0-255 representing 0.0-1.0).
+2. **Precision**: All float32. Weights stored as float32 C arrays. Activations are float32. No int8, no Q16.16, no shifts or scales.
+3. **Normalization**: RMSNorm (not LayerNorm). Uses FVMAC for sum-of-squares, FVRSQRT for reciprocal sqrt.
+4. **NPU instructions used**: All 10 FP NPU instructions (opcode 0x2B) — already implemented.
+   - FMACC, FVMAC, FRSTACC — dot products and linear layers
+   - FRELU, FGELU — activations
+   - FVEXP, FVRSQRT, FVMUL, FVREDUCE, FVMAX — softmax and RMSNorm
+5. **Model**: Embedding dim 64, 4 heads (head_dim=16), 2 layers, byte-level vocab (256), context 32 tokens, ~135K params, ~527KB float32.
+6. **Softmax strategy**: FVMAX (find max), subtract max, FVEXP, FVREDUCE (sum), set facc = 1/sum, FVMUL (normalize). All native float32.
+7. **Memory budget**: ~527KB weights + ~32KB KV cache + scratch < 1MB. Fits in 4MB RAM.
 
-## Instruction Encoding
+## FP NPU Instruction Summary
 
-All new instructions: opcode=0x0B, funct3=0, R-type format.
+All instructions use opcode 0x2B (custom-1), R-type encoding. Already implemented in `src/riscv_npu/npu/fp_instructions.py` with C intrinsics in `firmware/common/npu_fp.h`.
 
-| funct7 | Name       | Semantics                                                        | Operands                    |
-|--------|------------|------------------------------------------------------------------|-----------------------------|
-| 0      | NPU.MACC   | acc += signed(rs1) * signed(rs2) (existing)                      | rs1=val, rs2=val            |
-| 1      | NPU.VMAC   | acc += dot(mem_i8[rs1..+rd], mem_i8[rs2..+rd]) (existing)        | rd=count, rs1=addr, rs2=addr|
-| 2      | NPU.VEXP   | mem_i32[rs2+i*4] = exp_approx(mem_i32[rs1+i*4]) for i in 0..rd-1 | rd=count, rs1=src, rs2=dst  |
-| 3      | NPU.VRSQRT | rd = rsqrt_approx(mem_i32[rs1]) (scalar, Q16.16)                 | rd=result, rs1=addr         |
-| 4      | NPU.VMUL   | mem_i8[rs2+i] = clamp((mem_i8[rs1+i] * acc_lo) >> 16, i<rd)     | rd=count, rs1=src, rs2=dst  |
-| 5      | NPU.VREDUCE| rd = sum(mem_i32[rs1+i*4]) for i in 0..rs2-1                     | rd=result, rs1=addr, rs2=count|
-| 6      | NPU.VMAX   | rd = max(mem_i32[rs1+i*4]) for i in 0..rs2-1                    | rd=result, rs1=addr, rs2=count|
-
-### Detail: VEXP (funct7=2)
-- Reads rd as element count, rs1 as source address, rs2 as destination address.
-- For each element: reads int32 from mem[rs1+i*4] as Q16.16 fixed-point input.
-- Computes exp(x) in Q16.16 fixed-point using polynomial approximation.
-- Input range: approximately [-8.0, 0.0] in Q16.16 (values after max subtraction for softmax).
-- Writes int32 Q16.16 result to mem[rs2+i*4].
-- Approximation: exp(x) ~ polynomial or lookup-based, sufficient for softmax normalization.
-
-### Detail: VRSQRT (funct7=3)
-- Scalar operation. Reads one int32 from mem[rs1] as Q16.16 (the mean of squared values).
-- Computes 1/sqrt(x) in Q16.16 fixed-point.
-- Result written to register rd as Q16.16 int32.
-- Used in RMSNorm: scale = rsqrt(mean(x^2) + eps).
-
-### Detail: VMUL (funct7=4)
-- Reads rd as element count (from register), rs1 as source int8 array address, rs2 as destination int8 array address.
-- Reads a Q16.16 scale factor from the accumulator low word (acc_lo).
-- For each element i in 0..n-1: dst[i] = clamp((src[i] * acc_lo) >> 16, -128, 127).
-- src[i] is read as signed int8 from memory. Result is written as unsigned byte.
-- The accumulator is NOT modified by this instruction.
-- Used for RMSNorm scaling and attention score normalization.
-
-### Detail: VREDUCE (funct7=5)
-- Reads rs2 as element count (from register), rs1 as source address.
-- Sums all int32 values from mem[rs1+i*4] for i in 0..rs2-1.
-- Result (int32) written to register rd.
-- Used in softmax denominator and RMSNorm mean computation.
-
-### Detail: VMAX (funct7=6)
-- Reads rs2 as element count (from register), rs1 as source address.
-- Finds maximum int32 value from mem[rs1+i*4] for i in 0..rs2-1.
-- Result (int32) written to register rd.
-- Used in softmax numerically-stable computation (subtract max before exp).
+| funct3 | funct7 | Name       | Semantics                                                   |
+|--------|--------|------------|-------------------------------------------------------------|
+| 0      | 0      | FMACC      | facc += f[rs1] * f[rs2]                                     |
+| 0      | 1      | FVMAC      | facc += dot(mem_f32[rs1..+n], mem_f32[rs2..+n])             |
+| 0      | 2      | FVEXP      | dst_f32[i] = exp(src_f32[i]) for i in 0..n-1                |
+| 0      | 3      | FVRSQRT    | f[rd] = 1/sqrt(mem_f32[rs1])                                |
+| 0      | 4      | FVMUL      | dst_f32[i] = src_f32[i] * (float32)facc for i in 0..n-1    |
+| 0      | 5      | FVREDUCE   | f[rd] = sum(mem_f32[rs1..+n])                               |
+| 0      | 6      | FVMAX      | f[rd] = max(mem_f32[rs1..+n])                               |
+| 1      | —      | FRELU      | f[rd] = max(f[rs1], 0.0)                                    |
+| 4      | —      | FGELU      | f[rd] = gelu(f[rs1])                                        |
+| 5      | —      | FRSTACC    | f[rd] = (float32)facc; facc = 0.0                           |
 
 ## Deliverables List
 
-1. **NPU instruction implementations** (engine + instructions + decode + disasm)
-   - VEXP, VRSQRT, VMUL, VREDUCE, VMAX
-   - Unit tests for each instruction
-2. **C intrinsics** (firmware/common/npu.h)
-   - Inline assembly wrappers for 5 new instructions
-3. **Python quantized transformer inference** (src/riscv_npu/npu/transformer.py)
-   - Pure-Python reference implementation matching firmware behavior
+1. **Python float transformer reference** (`src/riscv_npu/tools/transformer.py`)
+   - Rewrite: all-float, no quantization, no Q16.16, no clamp/shift
    - Unit tests
-4. **Transformer model trainer and weight exporter** (tools/export_transformer_weights.py)
-   - Train tiny char-level transformer on simple text corpus
-   - Quantize weights to int8
-   - Export C header and Python test data
-5. **C firmware** (firmware/transformer/)
-   - main.c implementing full transformer forward pass
+2. **Weight exporter** (`src/riscv_npu/tools/export_transformer_weights.py`)
+   - Rewrite: train model, export raw float32 weights (no quantization step)
+   - Export float32 C arrays and Python test data
+3. **C firmware** (`firmware/transformer/main.c`, `firmware/transformer/weights.h`)
+   - Rewrite: use `npu_fp.h` FP NPU intrinsics, float32 throughout
    - Makefile for cross-compilation
-6. **Integration tests** (tests/integration/test_transformer.py)
-   - Run firmware on emulator, verify output matches Python reference
-7. **Documentation updates**
-   - docs/npu-design.md: new instructions
-   - docs/isa-reference.md: new instruction table entries
+4. **Integration tests** (`tests/integration/test_transformer.py`)
+   - Update: compare firmware output to Python float reference
+5. **Documentation updates**
+   - `docs/npu-design.md`: update transformer section for FP
+   - `docs/isa-reference.md`: verify FP NPU entries are current
 
 ## Implementation Details
 
-### Deliverable 1: NPU Instructions
+### Deliverable 1: Python Float Transformer Reference
 
-**Files modified:**
-- `src/riscv_npu/cpu/decode.py`: Extend OP_NPU funct3==0 case to pass through all funct7 values (already works -- R-type decode captures funct7).
-- `src/riscv_npu/npu/engine.py`: Add `build_exp_table()` for VEXP lookup, `fixed_rsqrt()` for VRSQRT.
-- `src/riscv_npu/npu/instructions.py`: Add `_exec_vexp()`, `_exec_vrsqrt()`, `_exec_vmul()`, `_exec_vreduce()`, `_exec_vmax()`. Dispatch from funct7 values 2-6 within funct3==0 handler.
-- `src/riscv_npu/tui/disasm.py`: Add disassembly mnemonics for new instructions.
+**File:** `src/riscv_npu/tools/transformer.py`
+
+Rewrite from int8/Q16.16 to pure float. This is the reference implementation that integration tests compare against.
+
+**Data structures:**
+
+```python
+@dataclass
+class TransformerConfig:
+    vocab_size: int = 256
+    embed_dim: int = 64
+    n_heads: int = 4
+    head_dim: int = 16
+    n_layers: int = 2
+    context_len: int = 32
+    ff_dim: int = 256
+
+@dataclass
+class LayerWeights:
+    ln1_gamma: list[float]           # (embed_dim,)
+    wq: list[list[float]]           # (embed_dim, embed_dim)
+    bq: list[float]                 # (embed_dim,)
+    wk: list[list[float]]           # (embed_dim, embed_dim)
+    bk: list[float]                 # (embed_dim,)
+    wv: list[list[float]]           # (embed_dim, embed_dim)
+    bv: list[float]                 # (embed_dim,)
+    wo: list[list[float]]           # (embed_dim, embed_dim)
+    bo: list[float]                 # (embed_dim,)
+    ln2_gamma: list[float]           # (embed_dim,)
+    w1: list[list[float]]           # (ff_dim, embed_dim)
+    b1: list[float]                 # (ff_dim,)
+    w2: list[list[float]]           # (embed_dim, ff_dim)
+    b2: list[float]                 # (embed_dim,)
+
+@dataclass
+class TransformerWeights:
+    token_embed: list[list[float]]   # (vocab_size, embed_dim)
+    pos_embed: list[list[float]]     # (context_len, embed_dim)
+    layers: list[LayerWeights]
+    ln_final_gamma: list[float]      # (embed_dim,)
+    output_proj: list[list[float]]   # (vocab_size, embed_dim)
+    output_bias: list[float]         # (vocab_size,)
+```
 
 **Key functions:**
 
 ```python
-# engine.py
-def exp_q16_16(x: int) -> int:
-    """Compute exp(x) where x is Q16.16 fixed-point. Returns Q16.16."""
+def dot_f32(a: list[float], b: list[float]) -> float:
+    """Dot product of two float vectors."""
 
-def rsqrt_q16_16(x: int) -> int:
-    """Compute 1/sqrt(x) where x is Q16.16 fixed-point. Returns Q16.16."""
+def rmsnorm(x: list[float], gamma: list[float], dim: int) -> list[float]:
+    """RMSNorm: x * gamma * rsqrt(mean(x^2) + eps)."""
 
-# instructions.py
-def _exec_vexp(inst, regs, mem, npu) -> None:
-    """VEXP: vectorized exp over int32 Q16.16 array."""
+def softmax(scores: list[float], n: int) -> list[float]:
+    """Numerically stable softmax: subtract max, exp, normalize."""
 
-def _exec_vrsqrt(inst, regs, mem, npu) -> None:
-    """VRSQRT: scalar reciprocal sqrt, Q16.16."""
+def linear(x: list[float], weight: list[list[float]], bias: list[float],
+           in_dim: int, out_dim: int) -> list[float]:
+    """y[i] = dot(weight[i], x) + bias[i]."""
 
-def _exec_vmul(inst, regs, mem, npu) -> None:
-    """VMUL: scale int8 vector by Q16.16 factor from accumulator."""
+def gelu(x: float) -> float:
+    """GELU activation."""
 
-def _exec_vreduce(inst, regs, mem) -> None:
-    """VREDUCE: sum int32 array into rd."""
+def transformer_forward(tokens: list[int], weights: TransformerWeights,
+                        config: TransformerConfig) -> list[float]:
+    """Full forward pass, returns logits for last token."""
 
-def _exec_vmax(inst, regs, mem) -> None:
-    """VMAX: max of int32 array into rd."""
+def predict_next_token(tokens: list[int], weights: TransformerWeights,
+                       config: TransformerConfig) -> int:
+    """Argmax of logits."""
 ```
 
-**Q16.16 format**: 32-bit signed integer where bits [31:16] are the integer part and bits [15:0] are the fractional part. 1.0 = 0x00010000 = 65536. Range: approximately [-32768, 32767.99998].
+### Deliverable 2: Weight Exporter
 
-**VEXP approximation**: Use piece-wise polynomial or lookup table. For softmax, inputs are in [-8, 0] range (after max subtraction). exp(-8) ~ 0.000335 in Q16.16 = ~22. exp(0) = 1.0 = 65536. A 256-entry lookup table with linear interpolation gives sufficient precision.
+**File:** `src/riscv_npu/tools/export_transformer_weights.py`
 
-**VRSQRT approximation**: Newton-Raphson with a good initial guess. For RMSNorm, input is always positive. rsqrt(x) = 1/sqrt(x). One or two Newton iterations from a lookup-based initial estimate.
+Rewrite: remove all quantization (no QAT, no int8, no calibration, no shifts). Train a standard float model and export weights directly as float32.
 
-### Deliverable 2: C Intrinsics
+**Training:**
+- Same model architecture (TinyTransformer with RMSNorm, GELU FFN)
+- Remove QATLinear — use standard nn.Linear
+- Remove all fake_quantize calls
+- Remove enable_qat/disable_qat
+- Standard Adam training, ~10 epochs on repeated text corpus
 
-**File modified:** `firmware/common/npu.h`
+**Export:**
+- `weights.h`: float32 C arrays instead of int8
+- `test_data.py`: test sequences + float reference predictions
+
+**Key changes from current:**
+- `_quantize_tensor()` → removed
+- `_calibrate_activations()` → removed
+- `quantize_model()` → `extract_weights()` (just copies float tensors)
+- `_format_int8_array()` → `_format_float_array()` (float C arrays)
+- `_format_int32_array()` → updated for float biases
+- `quantized_inference_python()` → `float_inference_python()` (uses float reference)
+
+**C header format:**
 
 ```c
-// VEXP: dst[i] = exp(src[i]) for i in 0..n-1, Q16.16 fixed-point
-#define NPU_VEXP(src, dst, n) ...
+#define VOCAB_SIZE 256
+#define EMBED_DIM 64
+#define N_HEADS 4
+#define HEAD_DIM 16
+#define N_LAYERS 2
+#define CONTEXT_LEN 32
+#define FF_DIM 256
 
-// VRSQRT: returns 1/sqrt(mem[addr]) in Q16.16
-static inline int32_t NPU_VRSQRT(void *addr) ...
-
-// VMUL: dst[i] = clamp((src[i] * acc_lo) >> 16, -128, 127) for i in 0..n-1
-#define NPU_VMUL(src, dst, n) ...
-
-// VREDUCE: returns sum of int32 array
-static inline int32_t NPU_VREDUCE(void *addr, int n) ...
-
-// VMAX: returns max of int32 array
-static inline int32_t NPU_VMAX(void *addr, int n) ...
+static const float TOKEN_EMBED[256][64] = { ... };
+static const float POS_EMBED[32][64] = { ... };
+static const float L0_LN1_GAMMA[64] = { ... };
+static const float L0_WQ[64][64] = { ... };
+static const float L0_BQ[64] = { ... };
+/* ... etc ... */
 ```
 
-### Deliverable 3: Python Transformer Reference
-
-**File:** `src/riscv_npu/npu/transformer.py`
-
-Pure-Python quantized transformer forward pass. All operations match what the firmware will do: int8 weights, int32 intermediates, Q16.16 for softmax/norm.
-
-Key functions:
-```python
-def rmsnorm_q(x_i8: list[int], gamma_i8: list[int], dim: int) -> list[int]:
-    """RMSNorm in quantized domain."""
-
-def attention_q(q_i8, k_i8, v_i8, n_tokens, head_dim) -> list[int]:
-    """Single-head attention in quantized domain."""
-
-def transformer_block_q(x_i8, weights, n_tokens, dim, n_heads) -> list[int]:
-    """One transformer block: attn + ffn with residual."""
-
-def transformer_forward_q(tokens, weights, config) -> list[int]:
-    """Full transformer: embedding -> blocks -> output logits."""
-```
-
-### Deliverable 4: Weight Exporter
-
-**File:** `tools/export_transformer_weights.py`
-
-Trains on a simple text corpus (e.g., Shakespeare or generated patterns). Exports:
-- `firmware/transformer/weights.h`: C arrays for all weights
-- `firmware/transformer/test_data.py`: test input sequences + expected outputs
-
-### Deliverable 5: C Firmware
+### Deliverable 3: C Firmware
 
 **File:** `firmware/transformer/main.c`
 
-Transformer forward pass in C using NPU instructions. Reads input tokens from a buffer, runs one forward pass, outputs predicted next token via UART/stdout.
+Rewrite to use FP NPU intrinsics (`npu_fp.h`). All buffers are `float` instead of `int8_t`/`int32_t`.
 
-### Deliverable 6: Integration Tests
+**Linear layer:**
+```c
+static void linear(
+    const float *input, int in_dim,
+    const float *weight, const float *bias,
+    float *output, int out_dim
+) {
+    for (int i = 0; i < out_dim; i++) {
+        NPU_FVMAC(&weight[i * in_dim], input, in_dim);
+        output[i] = NPU_FRSTACC() + bias[i];
+    }
+}
+```
+
+**RMSNorm:**
+```c
+static void rmsnorm(
+    const float *input, const float *gamma,
+    float *output, int dim
+) {
+    /* sum of squares via FVMAC(input, input) */
+    NPU_FVMAC(input, input, dim);
+    float sum_sq = NPU_FRSTACC();
+    float mean_sq = sum_sq / (float)dim + 1e-5f;
+
+    /* 1/sqrt(mean_sq) */
+    float scale = NPU_FVRSQRT(&mean_sq);
+
+    /* output[i] = input[i] * gamma[i] * scale */
+    for (int i = 0; i < dim; i++) {
+        output[i] = input[i] * gamma[i] * scale;
+    }
+}
+```
+
+**Softmax:**
+```c
+static void softmax(float *scores, int n, float *probs) {
+    float max_score = NPU_FVMAX(scores, n);
+
+    /* subtract max */
+    for (int i = 0; i < n; i++)
+        scores[i] -= max_score;
+
+    /* exp */
+    NPU_FVEXP(scores, probs, n);
+
+    /* sum */
+    float sum_exp = NPU_FVREDUCE(probs, n);
+
+    /* normalize: set facc = 1/sum, then FVMUL */
+    NPU_FRSTACC();                       /* clear facc */
+    float inv = 1.0f / sum_exp;
+    float one = 1.0f;
+    NPU_FMACC(inv, one);                /* facc = 1/sum */
+    NPU_FVMUL(probs, probs, n);         /* probs[i] *= facc */
+}
+```
+
+**GELU activation:**
+```c
+static void gelu_activation(float *buf, int n) {
+    for (int i = 0; i < n; i++)
+        buf[i] = NPU_FGELU(buf[i]);
+}
+```
+
+**Attention:**
+```c
+static void attention(
+    const float *x_in, int layer, int pos,
+    const float *wq, const float *bq,
+    const float *wk, const float *bk,
+    const float *wv, const float *bv,
+    const float *wo, const float *bo,
+    float *output
+) {
+    /* Project Q, K, V */
+    linear(x_in, EMBED_DIM, wq, bq, q_proj, EMBED_DIM);
+    linear(x_in, EMBED_DIM, wk, bk, k_proj, EMBED_DIM);
+    linear(x_in, EMBED_DIM, wv, bv, v_proj, EMBED_DIM);
+
+    /* Store K, V into cache */
+    for (int d = 0; d < EMBED_DIM; d++) {
+        k_cache[layer][pos][d] = k_proj[d];
+        v_cache[layer][pos][d] = v_proj[d];
+    }
+
+    int n_tokens = pos + 1;
+    float attn_scale = 1.0f / sqrtf((float)HEAD_DIM);
+
+    /* Per-head attention */
+    for (int h = 0; h < N_HEADS; h++) {
+        int h_start = h * HEAD_DIM;
+
+        /* Compute scores: Q[h] . K_cache[h] * scale */
+        for (int t = 0; t < n_tokens; t++) {
+            NPU_FVMAC(&q_proj[h_start], &k_cache[layer][t][h_start], HEAD_DIM);
+            scores_buf[t] = NPU_FRSTACC() * attn_scale;
+        }
+
+        /* Softmax */
+        softmax(scores_buf, n_tokens, probs_buf);
+
+        /* Weighted sum of V */
+        for (int d = 0; d < HEAD_DIM; d++) {
+            float acc = 0.0f;
+            for (int t = 0; t < n_tokens; t++) {
+                acc += probs_buf[t] * v_cache[layer][t][h_start + d];
+            }
+            attn_out[h_start + d] = acc;
+        }
+    }
+
+    /* Output projection */
+    linear(attn_out, EMBED_DIM, wo, bo, output, EMBED_DIM);
+}
+```
+
+**Memory layout:**
+- All weight arrays in .rodata as `const float` (compiled into ELF)
+- Scratch buffers in .bss as `float`:
+  - `x[EMBED_DIM]`, `normed[EMBED_DIM]`, `q_proj[EMBED_DIM]`, etc.
+  - `k_cache[N_LAYERS][CONTEXT_LEN][EMBED_DIM]` (float)
+  - `v_cache[N_LAYERS][CONTEXT_LEN][EMBED_DIM]` (float)
+  - `scores_buf[CONTEXT_LEN]`, `probs_buf[CONTEXT_LEN]`
+
+**Key differences from old firmware:**
+- `#include "../common/npu_fp.h"` instead of `"../common/npu.h"`
+- No `clamp_i8()`, no shifts, no Q16.16 conversions
+- No `NPU_VMAC` / `NPU_RSTACC` / `NPU_CLAMP` / `NPU_GELU` (integer NPU)
+- Everything is `float` instead of `int8_t` / `int32_t`
+- Attention scale is just `1.0f / sqrtf(HEAD_DIM)` (not Q16.16)
+- Softmax outputs float probabilities [0, 1] (not uint8 [0, 255])
+- Residual connections are simple float addition (no clamping)
+
+### Deliverable 4: Integration Tests
 
 **File:** `tests/integration/test_transformer.py`
 
-Same pattern as test_mnist.py: load ELF, inject test data, run CPU, compare output to Python reference.
+Update to work with float reference. Key changes:
+- `_load_test_data()` loads `FLOAT_PREDICTIONS` (no `QUANT_PREDICTIONS`)
+- Compare firmware output to float Python reference predictions
+- Same structure: load ELF, inject tokens, run CPU, parse output
+
+### Deliverable 5: Documentation
+
+Update `docs/npu-design.md` and `docs/isa-reference.md` to reflect FP transformer usage.
 
 ## Test Coverage Requirements
 
-### Deliverable 1 tests (in tests/npu/test_instructions.py and tests/npu/test_engine.py):
+### Deliverable 1 tests (in `tests/tools/test_transformer.py`):
 
-**VEXP tests:**
-- `test_vexp_zero`: exp(0) = 1.0 in Q16.16 = 65536
-- `test_vexp_negative`: exp(-1.0) ~ 0.368 in Q16.16 ~ 24109
-- `test_vexp_large_negative`: exp(-8.0) ~ 0.000335, should be small positive
-- `test_vexp_multiple_elements`: vector of 4 elements, verify each
-- `test_vexp_zero_count`: n=0 does nothing
+**Float ops:**
+- `test_dot_f32_basic`: dot product of known vectors
+- `test_dot_f32_zero`: zero vector gives zero
 
-**VRSQRT tests:**
-- `test_vrsqrt_one`: rsqrt(1.0) = 1.0 in Q16.16
-- `test_vrsqrt_four`: rsqrt(4.0) = 0.5 in Q16.16
-- `test_vrsqrt_quarter`: rsqrt(0.25) = 2.0 in Q16.16
-- `test_vrsqrt_large`: rsqrt(100.0) = 0.1 in Q16.16
+**RMSNorm:**
+- `test_rmsnorm_ones`: all-ones input, gamma=1.0 → each element ~1.0
+- `test_rmsnorm_scaling`: known input, verify normalization
+- `test_rmsnorm_zero_input`: all zeros → zeros out
 
-**VMUL tests:**
-- `test_vmul_identity`: scale=1.0 (acc_lo=65536), values pass through
-- `test_vmul_half`: scale=0.5, values halved
-- `test_vmul_negative_scale`: negative scale factor
-- `test_vmul_clamps_to_int8`: overflow clamped to [-128, 127]
-- `test_vmul_zero_count`: n=0 does nothing
+**Softmax:**
+- `test_softmax_uniform`: equal scores → equal probabilities
+- `test_softmax_one_hot`: one large score dominates
+- `test_softmax_sums_to_one`: probabilities sum to ~1.0
 
-**VREDUCE tests:**
-- `test_vreduce_basic`: sum of [1, 2, 3, 4] = 10
-- `test_vreduce_negative`: sum including negatives
-- `test_vreduce_single`: single element
-- `test_vreduce_zero_count`: n=0 returns 0
+**Linear:**
+- `test_linear_identity_weight`: identity-ish weight matrix
+- `test_linear_with_bias`: verify bias is added
 
-**VMAX tests:**
-- `test_vmax_basic`: max of [1, 5, 3, 2] = 5
-- `test_vmax_all_negative`: max of [-3, -1, -5] = -1
-- `test_vmax_single`: single element
-- `test_vmax_zero_count`: n=0 returns minimum int32
+**Attention:**
+- `test_attention_single_head`: small known Q, K, V
+- `test_attention_deterministic`: same input → same output
 
-### Deliverable 3 tests (in tests/npu/test_transformer.py):
-- `test_rmsnorm_identity`: all-ones input, gamma=1
-- `test_rmsnorm_scaling`: verify correct normalization
-- `test_attention_single_head`: small known Q, K, V matrices
-- `test_softmax_q`: verify softmax sums to ~255 (uint8 scale)
-- `test_transformer_forward_deterministic`: same input -> same output
+**Forward pass:**
+- `test_transformer_forward_deterministic`: same tokens + weights → same logits
+- `test_predict_next_token`: returns valid token ID [0, 255]
+
+### Deliverable 4 tests (in `tests/integration/test_transformer.py`):
+- `test_single_sequence`: firmware prediction matches Python reference
+- `test_multiple_sequences`: majority of predictions match
 
 ## Acceptance Criteria
 
 1. `uv run pytest` passes with all existing + new tests
-2. `uv run pytest --co -q | tail -1` shows increased test count (>564)
-3. New NPU instructions work correctly through the CPU step pipeline
-4. Python transformer reference produces deterministic output for fixed weights
-5. (Stretch) Firmware compiles and runs on emulator, matching Python reference
+2. Python float transformer reference produces deterministic output for fixed weights
+3. Weight exporter trains model and exports float32 C header + test data
+4. Firmware compiles with `-march=rv32imf -mabi=ilp32f` and runs on emulator
+5. Firmware predictions match Python reference on test sequences
+6. No int8, Q16.16, shifts, scales, or clamp logic anywhere in the transformer code

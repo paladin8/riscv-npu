@@ -1,8 +1,8 @@
 """Transformer inference integration tests.
 
-Runs compiled transformer firmware on the emulator with test input
-sequences and verifies that the quantized inference matches the
-Python reference predictions.
+Runs compiled float32 transformer firmware on the emulator with test input
+sequences and verifies that the firmware predictions match the Python
+float reference predictions.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ def _load_test_data() -> dict:
     """Load the auto-generated test data module.
 
     Returns:
-        Dict with SEQUENCES, FLOAT_PREDICTIONS, QUANT_PREDICTIONS, CONTEXT_LEN.
+        Dict with SEQUENCES, FLOAT_PREDICTIONS, CONTEXT_LEN.
     """
     import importlib.util
 
@@ -48,7 +48,6 @@ def _load_test_data() -> dict:
     return {
         "SEQUENCES": mod.SEQUENCES,
         "FLOAT_PREDICTIONS": mod.FLOAT_PREDICTIONS,
-        "QUANT_PREDICTIONS": mod.QUANT_PREDICTIONS,
         "CONTEXT_LEN": mod.CONTEXT_LEN,
     }
 
@@ -131,7 +130,7 @@ def _parse_prediction(output: str) -> int:
 @pytest.mark.skipif(not _HAS_ELF, reason="transformer.elf not built")
 @pytest.mark.skipif(not _HAS_TEST_DATA, reason="test_data.py not generated")
 class TestTransformerInference:
-    """Integration tests for transformer firmware inference."""
+    """Integration tests for float32 transformer firmware inference."""
 
     @pytest.fixture(autouse=True)
     def _setup(self) -> None:
@@ -144,9 +143,9 @@ class TestTransformerInference:
         assert self.test_n_tokens_addr is not None, "test_n_tokens symbol not found"
 
     def test_single_sequence(self) -> None:
-        """Run inference on the first test sequence."""
+        """Run inference on the first test sequence and compare to float reference."""
         seq = self.test_data["SEQUENCES"][0]
-        expected = self.test_data["QUANT_PREDICTIONS"][0]
+        expected = self.test_data["FLOAT_PREDICTIONS"][0]
 
         output = _run_inference(
             self.elf_data, seq,
@@ -160,9 +159,9 @@ class TestTransformerInference:
         )
 
     def test_multiple_sequences(self) -> None:
-        """Run inference on all test sequences and verify matches."""
+        """Run inference on all test sequences and verify majority match float reference."""
         sequences = self.test_data["SEQUENCES"]
-        quant_preds = self.test_data["QUANT_PREDICTIONS"]
+        float_preds = self.test_data["FLOAT_PREDICTIONS"]
 
         correct = 0
         mismatches: list[str] = []
@@ -174,15 +173,15 @@ class TestTransformerInference:
             )
             predicted = _parse_prediction(output)
 
-            if predicted == quant_preds[idx]:
+            if predicted == float_preds[idx]:
                 correct += 1
             else:
                 mismatches.append(
-                    f"  Seq {idx}: firmware={predicted}, python_quant={quant_preds[idx]}"
+                    f"  Seq {idx}: firmware={predicted}, python_float={float_preds[idx]}"
                 )
 
         accuracy = correct / max(1, len(sequences)) * 100
-        # Allow some mismatches due to implementation differences
+        # Expect high agreement since both use float32
         assert accuracy >= 50.0, (
             f"Agreement {accuracy:.1f}% < 50% "
             f"({correct}/{len(sequences)} matching)\n"

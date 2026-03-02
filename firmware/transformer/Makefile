@@ -10,7 +10,7 @@ OBJS := main.o syscalls.o
 $(TARGET): $(START_OBJ) $(OBJS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 
-main.o: main.c weights.h ../common/npu.h
+main.o: main.c weights.h ../common/npu_fp.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 syscalls.o: ../common/syscalls.c
