@@ -149,7 +149,9 @@ def render_debugger(state: DebuggerState) -> Layout:
 
 
 def run_debugger(
-    elf_path: str, writes: list[tuple[str, str]] | None = None,
+    elf_path: str,
+    writes: list[tuple[str, str]] | None = None,
+    fs_root: "Path | None" = None,
 ) -> None:
     """Launch the TUI debugger for an ELF binary.
 
@@ -159,7 +161,10 @@ def run_debugger(
     Args:
         elf_path: Path to the ELF file to debug.
         writes: Optional list of (symbol, file_path) pairs to write into RAM.
+        fs_root: Optional directory to sandbox guest file I/O.
     """
+    from pathlib import Path  # local import to avoid circular
+
     # Set up memory bus, RAM, UART with capture buffer
     bus = MemoryBus()
     ram = RAM(_BASE, _RAM_SIZE)
@@ -170,7 +175,7 @@ def run_debugger(
 
     # Set up CPU with syscall handler
     cpu = CPU(bus)
-    handler = SyscallHandler(stdout=uart_capture)
+    handler = SyscallHandler(stdout=uart_capture, fs_root=fs_root)
     cpu.syscall_handler = handler
 
     # Load ELF

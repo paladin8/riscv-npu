@@ -46,6 +46,36 @@ def _run_elf(elf_path: pathlib.Path, stdin_data: bytes = b"") -> tuple[bytes, in
     return stdout.getvalue(), cpu.exit_code
 
 
+def _run_elf_with_fs(
+    elf_path: pathlib.Path,
+    fs_root: pathlib.Path,
+    stdin_data: bytes = b"",
+) -> tuple[bytes, int]:
+    """Load and run an ELF with file I/O sandboxed to fs_root.
+
+    Returns:
+        Tuple of (stdout_bytes, exit_code).
+    """
+    bus = MemoryBus()
+    ram = RAM(BASE, RAM_SIZE)
+    bus.register(BASE, RAM_SIZE, ram)
+
+    cpu = CPU(bus)
+    stdout = io.BytesIO()
+    stdin = io.BytesIO(stdin_data)
+    handler = SyscallHandler(stdout=stdout, stdin=stdin, fs_root=fs_root)
+    cpu.syscall_handler = handler
+
+    entry = load_elf(str(elf_path), ram)
+    cpu.pc = entry
+    cpu.registers.write(2, STACK_TOP)
+
+    cpu.run()
+    handler.close_all()
+
+    return stdout.getvalue(), cpu.exit_code
+
+
 @pytest.mark.skipif(not _HAS_TOOLCHAIN, reason="riscv64 toolchain not installed")
 class TestHelloWorld:
     """Integration test for firmware/hello."""
@@ -59,3 +89,24 @@ class TestHelloWorld:
         output, exit_code = _run_elf(elf_path)
         assert output == b"Hello, World!\n"
         assert exit_code == 0
+
+
+@pytest.mark.skipif(not _HAS_TOOLCHAIN, reason="riscv64 toolchain not installed")
+class TestFileDemo:
+    """Integration test for firmware/file_demo."""
+
+    def test_file_demo(self, tmp_path: pathlib.Path) -> None:
+        """file_demo.elf creates a file, writes, seeks, reads back, and prints."""
+        elf_path = FIRMWARE_DIR / "file_demo" / "file_demo.elf"
+        if not elf_path.exists():
+            pytest.skip("file_demo.elf not built (run: cd firmware/file_demo && make)")
+
+        output, exit_code = _run_elf_with_fs(elf_path, tmp_path)
+        assert exit_code == 0
+        assert b"Read back from file:" in output
+        assert b"Hello from RISC-V file I/O!" in output
+
+        # Verify file was created on host
+        created_file = tmp_path / "test_output.txt"
+        assert created_file.exists()
+        assert created_file.read_text() == "Hello from RISC-V file I/O!"

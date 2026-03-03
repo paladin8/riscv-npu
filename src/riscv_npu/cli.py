@@ -2,6 +2,7 @@
 
 import argparse
 import sys
+from pathlib import Path
 
 from .cpu.cpu import CPU
 from .devices.uart import UART, UART_BASE, UART_SIZE
@@ -51,6 +52,10 @@ def main() -> None:
         metavar="SYMBOL:FILE",
         help="Write FILE contents to ELF symbol address (repeatable)",
     )
+    run_parser.add_argument(
+        "--fs-root", type=Path, default=None,
+        help="Sandbox guest file I/O to this directory",
+    )
 
     debug_parser = sub.add_parser("debug", help="Run with TUI debugger")
     debug_parser.add_argument("binary", help="Path to ELF file to debug")
@@ -58,6 +63,10 @@ def main() -> None:
         "--write", action="append", type=_parse_write_arg, default=[],
         metavar="SYMBOL:FILE",
         help="Write FILE contents to ELF symbol address (repeatable)",
+    )
+    debug_parser.add_argument(
+        "--fs-root", type=Path, default=None,
+        help="Sandbox guest file I/O to this directory",
     )
 
     gdb_parser = sub.add_parser("gdb", help="Start GDB remote debug server")
@@ -71,16 +80,20 @@ def main() -> None:
         metavar="SYMBOL:FILE",
         help="Write FILE contents to ELF symbol address (repeatable)",
     )
+    gdb_parser.add_argument(
+        "--fs-root", type=Path, default=None,
+        help="Sandbox guest file I/O to this directory",
+    )
 
     args = parser.parse_args()
 
     if args.command == "run":
-        run_binary(args.binary, args.write)
+        run_binary(args.binary, args.write, fs_root=args.fs_root)
     elif args.command == "debug":
         from .tui import run_debugger
-        run_debugger(args.binary, args.write)
+        run_debugger(args.binary, args.write, fs_root=args.fs_root)
     elif args.command == "gdb":
-        run_gdb_server(args.binary, args.port, args.write)
+        run_gdb_server(args.binary, args.port, args.write, fs_root=args.fs_root)
     else:
         parser.print_help()
         sys.exit(1)
@@ -118,7 +131,11 @@ def _apply_writes(
         )
 
 
-def run_binary(path: str, writes: list[tuple[str, str]] | None = None) -> None:
+def run_binary(
+    path: str,
+    writes: list[tuple[str, str]] | None = None,
+    fs_root: Path | None = None,
+) -> None:
     """Load a binary or ELF file and run until halt or 1M cycles.
 
     Detects ELF files by magic bytes. For ELF files, loads segments to
@@ -128,6 +145,7 @@ def run_binary(path: str, writes: list[tuple[str, str]] | None = None) -> None:
     Args:
         path: Path to the binary or ELF file.
         writes: Optional list of (symbol, file_path) pairs to write into RAM.
+        fs_root: Optional directory to sandbox guest file I/O.
     """
     bus = MemoryBus()
     ram = RAM(BASE, RAM_SIZE)
@@ -136,7 +154,7 @@ def run_binary(path: str, writes: list[tuple[str, str]] | None = None) -> None:
     bus.register(UART_BASE, UART_SIZE, uart)
 
     cpu = CPU(bus)
-    handler = SyscallHandler()
+    handler = SyscallHandler(fs_root=fs_root)
     cpu.syscall_handler = handler
 
     # Peek at the first 4 bytes to detect ELF
@@ -168,6 +186,7 @@ def run_binary(path: str, writes: list[tuple[str, str]] | None = None) -> None:
         cpu.pc = BASE
 
     cpu.run()
+    handler.close_all()
 
     print(f"Halted after {cpu.cycle_count} cycles.", file=sys.stderr)
     print(f"  x10 (a0) = {cpu.registers.read(10)}", file=sys.stderr)
@@ -180,6 +199,7 @@ def run_gdb_server(
     path: str,
     port: int = 1234,
     writes: list[tuple[str, str]] | None = None,
+    fs_root: Path | None = None,
 ) -> None:
     """Load an ELF file and start the GDB RSP debug server.
 
@@ -190,6 +210,7 @@ def run_gdb_server(
         path: Path to the ELF file to debug.
         port: TCP port to listen on for GDB connections.
         writes: Optional list of (symbol, file_path) pairs to write into RAM.
+        fs_root: Optional directory to sandbox guest file I/O.
     """
     from .gdb import serve
 
@@ -200,7 +221,7 @@ def run_gdb_server(
     bus.register(UART_BASE, UART_SIZE, uart)
 
     cpu = CPU(bus)
-    handler = SyscallHandler()
+    handler = SyscallHandler(fs_root=fs_root)
     cpu.syscall_handler = handler
 
     # Peek at the first 4 bytes to detect ELF
