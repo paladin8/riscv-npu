@@ -128,7 +128,7 @@ def test_gdb_connect_and_step() -> None:
 
         # Halt reason
         resp = _send_recv(client, "?")
-        assert resp == "S05"
+        assert resp == "T05thread:01;"
 
         # Read initial registers
         resp = _send_recv(client, "g")
@@ -136,7 +136,7 @@ def test_gdb_connect_and_step() -> None:
 
         # Step: executes ADDI x1, x0, 1
         resp = _send_recv(client, "s")
-        assert resp == "S05"
+        assert resp == "T05thread:01;"
 
         # Read registers again -- x1 should now be 1
         resp = _send_recv(client, "g")
@@ -173,7 +173,7 @@ def test_gdb_breakpoint_hit() -> None:
 
         # Continue -- should stop at breakpoint
         resp = _send_recv(client, "c")
-        assert resp == "S05"
+        assert resp == "T05thread:01;"
 
         # Read PC -- should be at breakpoint
         resp = _send_recv(client, "p20")
@@ -245,7 +245,7 @@ def test_gdb_no_ack_mode() -> None:
 
         # After enabling no-ack, we still get packet responses
         resp = _send_recv(client, "?")
-        assert resp == "S05"
+        assert resp == "T05thread:01;"
 
         _send_no_response(client, "k")
 
@@ -291,7 +291,7 @@ def test_gdb_multiple_steps() -> None:
 
         for i in range(3):
             resp = _send_recv(client, "s")
-            assert resp == "S05"
+            assert resp == "T05thread:01;"
             resp = _send_recv(client, "p20")
             pc = decode_reg32(resp)
             assert pc == BASE + (i + 1) * 4

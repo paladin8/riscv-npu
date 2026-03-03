@@ -88,8 +88,8 @@ def handle_packet(state: GdbState, packet: str) -> str | None:
 def handle_question(state: GdbState) -> str:
     """Handle ``?`` -- return halt reason.
 
-    Always returns ``S05`` (SIGTRAP) on initial attach, indicating
-    the target is stopped.
+    Always returns ``T05thread:01;`` (SIGTRAP with thread ID) on
+    initial attach, indicating the target is stopped.
 
     Args:
         state: Current GDB session state.
@@ -99,7 +99,7 @@ def handle_question(state: GdbState) -> str:
     """
     if state.cpu.halted:
         return f"W{state.cpu.exit_code:02x}"
-    return "S05"
+    return "T05thread:01;"
 
 
 def handle_read_regs(state: GdbState) -> str:
@@ -294,8 +294,8 @@ def handle_write_mem(state: GdbState, packet: str) -> str:
 def handle_step(state: GdbState) -> str:
     """Handle ``s`` -- single step, return stop reply.
 
-    Executes one instruction. Returns ``S05`` (SIGTRAP) after
-    stepping, or ``W00`` if the CPU has halted.
+    Executes one instruction. Returns ``T05thread:01;`` (SIGTRAP)
+    after stepping, or ``W00`` if the CPU has halted.
 
     Args:
         state: Current GDB session state.
@@ -314,7 +314,7 @@ def handle_step(state: GdbState) -> str:
     if state.cpu.halted:
         return f"W{state.cpu.exit_code:02x}"
 
-    return "S05"
+    return "T05thread:01;"
 
 
 def handle_continue(state: GdbState, sock: socket.socket) -> str:
@@ -333,30 +333,36 @@ def handle_continue(state: GdbState, sock: socket.socket) -> str:
     if state.cpu.halted:
         return f"W{state.cpu.exit_code:02x}"
 
+    steps_since_poll = 0
+
     while not state.cpu.halted:
-        # Check for Ctrl+C interrupt (byte 0x03)
-        try:
-            readable, _, _ = select.select([sock], [], [], 0)
-        except (ValueError, OSError):
-            readable = []
-        if readable:
+        # Check for Ctrl+C interrupt (byte 0x03) every 1024 steps
+        if steps_since_poll >= 1024:
+            steps_since_poll = 0
             try:
-                data = sock.recv(1, socket.MSG_PEEK)
-                if data and data[0] == 0x03:
-                    # Consume the interrupt byte
-                    sock.recv(1)
-                    return "S02"  # SIGINT
-            except OSError:
-                return "S02"
+                readable, _, _ = select.select([sock], [], [], 0)
+            except (ValueError, OSError):
+                readable = []
+            if readable:
+                try:
+                    data = sock.recv(1, socket.MSG_PEEK)
+                    if data and data[0] == 0x03:
+                        # Consume the interrupt byte
+                        sock.recv(1)
+                        return "S02"  # SIGINT
+                except OSError:
+                    return "S02"
 
         try:
             state.cpu.step()
         except MemoryError:
             return "S0b"  # SIGSEGV
 
+        steps_since_poll += 1
+
         # Check if we hit a breakpoint (check AFTER step, at new PC)
         if state.cpu.pc in state.breakpoints:
-            return "S05"  # SIGTRAP
+            return "T05thread:01;"  # SIGTRAP
 
     return f"W{state.cpu.exit_code:02x}"
 
@@ -493,6 +499,12 @@ def handle_query(state: GdbState, packet: str) -> str:
 
     if packet == "qC":
         return "QC1"
+
+    if packet == "qfThreadInfo":
+        return "m1"
+
+    if packet == "qsThreadInfo":
+        return "l"
 
     if packet.startswith("qOffsets"):
         return ""

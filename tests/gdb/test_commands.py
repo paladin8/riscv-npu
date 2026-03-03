@@ -52,9 +52,9 @@ def _make_mock_socket() -> socket.socket:
 
 
 def test_halt_reason() -> None:
-    """'?' returns 'S05'."""
+    """'?' returns 'T05thread:01;' (SIGTRAP with thread ID)."""
     state = _make_state()
-    assert handle_packet(state, "?") == "S05"
+    assert handle_packet(state, "?") == "T05thread:01;"
 
 
 def test_halt_reason_when_halted() -> None:
@@ -190,11 +190,11 @@ def test_write_mem_then_read() -> None:
 
 
 def test_step() -> None:
-    """'s' advances PC by 4 (on a NOP), returns 'S05'."""
+    """'s' advances PC by 4 (on a NOP), returns 'T05thread:01;'."""
     state = _make_state()
     initial_pc = state.cpu.pc
     result = handle_packet(state, "s")
-    assert result == "S05"
+    assert result == "T05thread:01;"
     assert state.cpu.pc == initial_pc + 4
 
 
@@ -216,7 +216,7 @@ def test_continue_to_breakpoint() -> None:
     # Create a mock socket with select that returns empty (no interrupt)
     mock_sock = _make_mock_socket()
     result = handle_continue(state, mock_sock)
-    assert result == "S05"
+    assert result == "T05thread:01;"
     assert state.cpu.pc == bp_addr
 
 
@@ -344,6 +344,13 @@ def test_kill_returns_none() -> None:
     state = _make_state()
     result = handle_packet(state, "k")
     assert result is None
+
+
+def test_query_thread_info() -> None:
+    """'qfThreadInfo' returns 'm1', 'qsThreadInfo' returns 'l'."""
+    state = _make_state()
+    assert handle_packet(state, "qfThreadInfo") == "m1"
+    assert handle_packet(state, "qsThreadInfo") == "l"
 
 
 def test_unknown_packet_returns_empty() -> None:

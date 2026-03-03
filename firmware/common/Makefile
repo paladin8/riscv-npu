@@ -11,7 +11,7 @@ OBJCOPY := riscv64-unknown-elf-objcopy
 ARCH    := rv32imf
 ABI     := ilp32f
 
-CFLAGS  := -march=$(ARCH) -mabi=$(ABI) -O2 -nostdlib -ffreestanding -Wall
+CFLAGS  := -march=$(ARCH) -mabi=$(ABI) -O2 -g -nostdlib -ffreestanding -Wall
 ASFLAGS := -march=$(ARCH) -mabi=$(ABI)
 LDFLAGS := -T $(COMMON_DIR)linker.ld -nostdlib
 

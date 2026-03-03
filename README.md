@@ -14,8 +14,9 @@ RISC-V (RV32IMF) emulator in Python with custom NPU instructions for neural netw
 | ELF loader                   | Full ELF32 RISC-V parser with symbol table lookup               |
 | Syscalls                     | Linux ABI: read, write, exit, brk                               |
 | TUI debugger                 | Registers, FPU, NPU, disassembly, memory, UART, instruction stats |
+| GDB remote debugging         | RSP stub over TCP, works with gdb-multiarch / riscv64-elf-gdb   |
 | Firmware examples            | 9 programs from fibonacci to a trained transformer LM           |
-| Test coverage                | 900+ tests, all passing                                         |
+| Test coverage                | 1000+ tests, all passing                                        |
 
 ## Prerequisites
 
@@ -64,6 +65,24 @@ Use `--write SYMBOL:FILE` to load file contents into memory at an ELF symbol's a
 | `g <hex_addr>`         | Jump memory view to address                   |
 | `h` / `help`           | Show command help                             |
 | `q` / `quit`           | Exit debugger                                 |
+
+## GDB remote debugging
+
+Start the GDB stub:
+
+```bash
+uv run python -m riscv_npu gdb firmware/hello/hello.elf
+```
+
+Connect from another terminal:
+
+```bash
+gdb-multiarch firmware/hello/hello.elf -ex 'target remote :1234'
+```
+
+The stub supports stepping, breakpoints, register/memory inspection, and source-level debugging (firmware is compiled with `-g` by default). Use `--port` to change the listen port.
+
+See [GDB Remote Debugging](docs/gdb.md) for the full command reference, supported features, and troubleshooting.
 
 ## Firmware
 
@@ -164,6 +183,7 @@ src/riscv_npu/
   loader/    -- ELF parser
   syscall/   -- ecall dispatch
   npu/       -- custom NPU instruction execution + compute engine
+  gdb/       -- GDB remote serial protocol stub
   tools/     -- weight export, assembler utilities
   tui/       -- Rich-based terminal debugger
 firmware/    -- C programs that run on the emulator
@@ -215,4 +235,5 @@ Designed for float32 inference with a float64 accumulator. Key instructions:
 
 - [ISA Reference](docs/isa-reference.md) -- complete quick reference for all 99 instructions
 - [NPU Design](docs/npu-design.md) -- detailed NPU architecture, encoding, C intrinsics, and inference pipelines
+- [GDB Remote Debugging](docs/gdb.md) -- GDB stub usage, supported commands, register layout, protocol details
 - [Performance Profile](docs/performance.md) -- profiling analysis and hardware acceleration recommendations
