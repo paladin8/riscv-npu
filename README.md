@@ -4,19 +4,19 @@ RISC-V (RV32IMF) emulator in Python with custom NPU instructions for neural netw
 
 ## Features
 
-| Feature                      | Details                                                          |
-|------------------------------|------------------------------------------------------------------|
-| ISA support                  | RV32I (41 instructions) + M extension (8) + F extension (26)    |
-| Custom NPU (integer)         | 14 instructions for quantized int8 inference (opcode 0x0B)      |
-| Custom NPU (floating-point)  | 10 instructions for float32 inference (opcode 0x2B)             |
-| Total instructions           | 99 (75 standard RISC-V + 24 custom NPU)                        |
-| Memory model                 | 4 MB RAM, memory-mapped UART (16550), memory-mapped NPU regs   |
-| ELF loader                   | Full ELF32 RISC-V parser with symbol table lookup               |
-| Syscalls                     | Linux ABI: read, write, exit, brk                               |
-| TUI debugger                 | Registers, FPU, NPU, disassembly, memory, UART, instruction stats |
-| GDB remote debugging         | RSP stub over TCP, works with gdb-multiarch / riscv64-elf-gdb   |
-| Firmware examples            | 9 programs from fibonacci to a trained transformer LM           |
-| Test coverage                | 1000+ tests, all passing                                        |
+| Feature                     | Details                                                           |
+|-----------------------------|-------------------------------------------------------------------|
+| ISA support                 | RV32I (41 instructions) + M extension (8) + F extension (26)      |
+| Custom NPU (integer)        | 14 instructions for quantized int8 inference (opcode 0x0B)        |
+| Custom NPU (floating-point) | 10 instructions for float32 inference (opcode 0x2B)               |
+| Total instructions          | 99 (75 standard RISC-V + 24 custom NPU)                           |
+| Memory model                | 4 MB RAM, memory-mapped UART (16550), memory-mapped NPU regs      |
+| ELF loader                  | Full ELF32 RISC-V parser with symbol table lookup                 |
+| Syscalls                    | Linux ABI: read, write, openat, close, lseek, exit, brk           |
+| TUI debugger                | Registers, FPU, NPU, disassembly, memory, UART, instruction stats |
+| GDB remote debugging        | RSP stub over TCP, works with gdb-multiarch / riscv64-elf-gdb     |
+| Firmware examples           | 10 programs from fibonacci to a trained transformer LM            |
+| Test coverage               | 1000+ tests, all passing                                          |
 
 ## Prerequisites
 
@@ -32,9 +32,10 @@ uv sync
 
 ## Running programs
 
-Run an ELF binary headless:
+Compile and run an ELF binary headless:
 
 ```bash
+make -C firmware/fibonacci
 uv run python -m riscv_npu run firmware/fibonacci/fibonacci.elf
 ```
 
@@ -45,6 +46,7 @@ The emulator prints the cycle count and the values in registers `a0`/`a1` on exi
 Launch the interactive debugger:
 
 ```bash
+make -C firmware/hello
 uv run python -m riscv_npu debug firmware/hello/hello.elf
 ```
 
@@ -71,6 +73,7 @@ Use `--write SYMBOL:FILE` to load file contents into memory at an ELF symbol's a
 Start the GDB stub:
 
 ```bash
+make -C firmware/hello
 uv run python -m riscv_npu gdb firmware/hello/hello.elf
 ```
 
@@ -91,7 +94,7 @@ Firmware programs are C code that runs **on** the emulated CPU. Each program liv
 ### Compiling firmware
 
 ```bash
-cd firmware/hello && make
+make -C firmware/hello
 ```
 
 This requires a RISC-V cross-compiler. All firmware is compiled with `-march=rv32imf -mabi=ilp32f` -- the emulator does **not** support the A (atomics) or C (compressed) extensions.
@@ -106,7 +109,8 @@ This requires a RISC-V cross-compiler. All firmware is compiled with `-march=rv3
 | `sort`        | Insertion sort, returns 1 on success                                 |
 | `newton`      | Square roots via Newton's method, verified against fsqrt             |
 | `fpu_test`    | Tests all RV32F floating-point instructions (34 checks)              |
-| `npu_test`    | Exercises all NPU instructions (MACC, RELU, QMUL, CLAMP, GELU)      |
+| `npu_test`    | Exercises all NPU instructions (MACC, RELU, QMUL, CLAMP, GELU)       |
+| `file_demo`   | File I/O demo: write, seek, and read back via openat/lseek           |
 | `mnist`       | Quantized 784->128->10 MLP, classifies handwritten digits            |
 | `transformer` | Float32 char-level transformer LM, trained on Shakespeare (FP NPU)   |
 
@@ -122,23 +126,22 @@ uv run --extra torch python -m riscv_npu.tools.export_mnist_weights
 uv run --extra torch python -m riscv_npu.tools.export_transformer_weights
 ```
 
-Then compile and run:
+Then compile and run via the debug scripts, which inject test inputs and launch the TUI debugger:
 
 ```bash
-cd firmware/mnist && make
-uv run python -m riscv_npu run firmware/mnist/mnist.elf
+make -C firmware/mnist
+./scripts/mnist-debug.sh 0             # test image 0 (digit 7)
 
-cd firmware/transformer && make
-uv run python -m riscv_npu run firmware/transformer/transformer.elf
+make -C firmware/transformer
+./scripts/transformer-debug.sh "the "  # generate from prompt
 ```
 
-The transformer generates text autoregressively -- it echoes the input prompt, then prints generated characters on a second line prefixed with `>`.
+The MNIST script looks up a test image by index (0-99) from `firmware/mnist/test_data.py` and writes it into the `test_image` symbol. The transformer script converts a text prompt into token bytes and injects them into the firmware's input buffers. Both require `--write` to load inputs, so the raw `uv run python -m riscv_npu run` command won't produce meaningful output.
 
 ## Testing
 
 ```bash
 uv run pytest              # all tests
-uv run pytest tests/cpu/ -v  # CPU tests only
 uv run pytest -x           # stop on first failure
 ```
 
