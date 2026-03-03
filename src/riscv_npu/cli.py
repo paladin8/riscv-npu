@@ -60,6 +60,18 @@ def main() -> None:
         help="Write FILE contents to ELF symbol address (repeatable)",
     )
 
+    gdb_parser = sub.add_parser("gdb", help="Start GDB remote debug server")
+    gdb_parser.add_argument("binary", help="Path to ELF file to debug")
+    gdb_parser.add_argument(
+        "--port", type=int, default=1234,
+        help="TCP port to listen on (default: 1234)",
+    )
+    gdb_parser.add_argument(
+        "--write", action="append", type=_parse_write_arg, default=[],
+        metavar="SYMBOL:FILE",
+        help="Write FILE contents to ELF symbol address (repeatable)",
+    )
+
     args = parser.parse_args()
 
     if args.command == "run":
@@ -67,6 +79,8 @@ def main() -> None:
     elif args.command == "debug":
         from .tui import run_debugger
         run_debugger(args.binary, args.write)
+    elif args.command == "gdb":
+        run_gdb_server(args.binary, args.port, args.write)
     else:
         parser.print_help()
         sys.exit(1)
@@ -160,3 +174,57 @@ def run_binary(path: str, writes: list[tuple[str, str]] | None = None) -> None:
     print(f"  x11 (a1) = {cpu.registers.read(11)}", file=sys.stderr)
 
     sys.exit(cpu.exit_code)
+
+
+def run_gdb_server(
+    path: str,
+    port: int = 1234,
+    writes: list[tuple[str, str]] | None = None,
+) -> None:
+    """Load an ELF file and start the GDB RSP debug server.
+
+    Sets up the CPU with the loaded firmware, then hands control
+    to the GDB stub which blocks until the debug session ends.
+
+    Args:
+        path: Path to the ELF file to debug.
+        port: TCP port to listen on for GDB connections.
+        writes: Optional list of (symbol, file_path) pairs to write into RAM.
+    """
+    from .gdb import serve
+
+    bus = MemoryBus()
+    ram = RAM(BASE, RAM_SIZE)
+    uart = UART()
+    bus.register(BASE, RAM_SIZE, ram)
+    bus.register(UART_BASE, UART_SIZE, uart)
+
+    cpu = CPU(bus)
+    handler = SyscallHandler()
+    cpu.syscall_handler = handler
+
+    # Peek at the first 4 bytes to detect ELF
+    with open(path, "rb") as f:
+        magic = f.read(4)
+
+    if magic != b"\x7fELF":
+        print("Error: GDB server requires an ELF file", file=sys.stderr)
+        sys.exit(1)
+
+    entry = load_elf(path, ram)
+    cpu.pc = entry
+    cpu.registers.write(2, STACK_TOP)  # SP = x2
+
+    # Set initial program break after loaded segments (16-byte aligned)
+    with open(path, "rb") as f:
+        elf_data = f.read()
+    prog = parse_elf(elf_data)
+    if prog.segments:
+        end = max(s.vaddr + s.memsz for s in prog.segments)
+        handler.brk = (end + 15) & ~15
+
+    # Apply --write arguments
+    if writes:
+        _apply_writes(writes, elf_data, ram)
+
+    serve(cpu, port=port)
