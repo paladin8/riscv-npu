@@ -2,7 +2,6 @@
 
 import errno
 import io
-import os
 from pathlib import Path
 
 from riscv_npu.cpu.cpu import CPU
@@ -286,6 +285,30 @@ class TestSysOpenat:
 
         handler.handle(cpu)
         assert cpu.registers.read(10) == (-errno.ENOENT) & 0xFFFFFFFF
+
+    def test_absolute_path_resolves_inside_sandbox(self, tmp_path: Path) -> None:
+        """openat with absolute guest path resolves relative to fs_root."""
+        cpu = _make_cpu()
+        handler = SyscallHandler(
+            stdout=io.BytesIO(), fs_root=tmp_path,
+        )
+
+        # Create a file at tmp_path/etc/test.txt
+        (tmp_path / "etc").mkdir()
+        (tmp_path / "etc" / "test.txt").write_text("inside sandbox")
+        path_addr = BASE + 0x3000
+        _write_cstring(cpu, path_addr, "/etc/test.txt")
+
+        cpu.registers.write(17, SYS_OPENAT)
+        cpu.registers.write(10, AT_FDCWD)
+        cpu.registers.write(11, path_addr)
+        cpu.registers.write(12, O_RDONLY)
+        cpu.registers.write(13, 0)
+
+        handler.handle(cpu)
+        fd = cpu.registers.read(10)
+        assert fd >= 3  # should succeed, not EACCES
+        handler.close_all()
 
     def test_sandbox_escape_blocked(self, tmp_path: Path) -> None:
         """openat with '../' path escaping fs_root returns -EACCES."""
@@ -601,7 +624,6 @@ class TestFileReadWrite:
 
     def test_no_fs_root_uses_cwd(self, tmp_path: Path, monkeypatch: object) -> None:
         """Without fs_root, paths resolve relative to CWD."""
-        import pytest
         monkeypatch.chdir(tmp_path)  # type: ignore[attr-defined]
 
         cpu = _make_cpu()

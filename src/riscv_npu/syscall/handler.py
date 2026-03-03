@@ -129,7 +129,10 @@ class SyscallHandler:
             Resolved host Path, or None if the path escapes the sandbox.
         """
         if self._fs_root is not None:
-            resolved = (self._fs_root / raw_path).resolve()
+            # Strip leading slashes so absolute guest paths resolve
+            # relative to fs_root (chroot semantics), not replace it.
+            clean = raw_path.lstrip("/")
+            resolved = (self._fs_root / clean).resolve()
             fs_root_resolved = self._fs_root.resolve()
             if not str(resolved).startswith(str(fs_root_resolved) + os.sep) and \
                resolved != fs_root_resolved:
