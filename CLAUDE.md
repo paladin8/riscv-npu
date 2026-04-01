@@ -54,6 +54,7 @@ RISC-V (RV32IM) emulator in Python with custom NPU instructions for neural netwo
 - Never skip or disable tests
 
 ## Git rules
+- Never commit unless the user explicitly asks — no automatic commits
 - main is always passing
 - No branches, commit directly to main
 - Atomic commits after each working milestone
