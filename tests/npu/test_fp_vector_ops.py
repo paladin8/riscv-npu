@@ -293,7 +293,7 @@ class TestFVGELU:
         _exec(cpu, _fp_npu_r(10, 12, 11, 0, 10))
         results = _read_f32_array(cpu, dst, 1)
         expected = 0.5 * 1.0 * (1 + math.erf(1.0 / math.sqrt(2)))
-        assert abs(results[0] - expected) < 0.01
+        assert abs(results[0] - expected) < 1e-4
 
     def test_large_negative(self) -> None:
         """FVGELU: gelu(-5.0) ≈ 0."""
@@ -322,7 +322,7 @@ class TestFVGELU:
         results = _read_f32_array(cpu, dst, len(inputs))
         for x, r in zip(inputs, results):
             expected = 0.5 * x * (1 + math.erf(x / math.sqrt(2)))
-            assert abs(r - expected) < 0.01, f"gelu({x}): got {r}, expected {expected}"
+            assert abs(r - expected) < 1e-4, f"gelu({x}): got {r}, expected {expected}"
 
     def test_nan(self) -> None:
         """FVGELU: NaN input produces NaN output."""

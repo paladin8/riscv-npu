@@ -12,7 +12,11 @@ from ..cpu.decode import Instruction
 from .engine import NpuState, facc_add, facc_reset, fgelu
 
 try:
-    from ._accel import fvmac_f32, fvmul_f32, fvexp_f32, fvreduce_f32, fvmax_f32
+    from ._accel import (
+        fvmac_f32, fvmul_f32, fvexp_f32, fvreduce_f32, fvmax_f32,
+        fvadd_f32, fvsub_f32, fvrelu_f32, fvgelu_f32, fvdiv_f32,
+        fvsub_scalar_f32,
+    )
     _USE_ACCEL = True
 except ImportError:
     _USE_ACCEL = False
@@ -21,6 +25,12 @@ except ImportError:
     fvexp_f32: Any = None
     fvreduce_f32: Any = None
     fvmax_f32: Any = None
+    fvadd_f32: Any = None
+    fvsub_f32: Any = None
+    fvrelu_f32: Any = None
+    fvgelu_f32: Any = None
+    fvdiv_f32: Any = None
+    fvsub_scalar_f32: Any = None
 
 if TYPE_CHECKING:
     from ..cpu.cpu import CPU
@@ -376,12 +386,16 @@ def _exec_fvadd(
     n = regs.read(inst.rd)
     addr_src1 = regs.read(inst.rs1)
     addr_src2 = regs.read(inst.rs2)
-    for i in range(n):
-        s1 = (addr_src1 + i * 4) & 0xFFFFFFFF
-        s2 = (addr_src2 + i * 4) & 0xFFFFFFFF
-        a = _read_mem_f32(mem, s1)
-        b = _read_mem_f32(mem, s2)
-        _write_mem_f32(mem, s2, a + b)
+    if _USE_ACCEL:
+        data, base = mem.get_device_data(addr_src1)
+        fvadd_f32(data, addr_src1 - base, addr_src2 - base, n)
+    else:
+        for i in range(n):
+            s1 = (addr_src1 + i * 4) & 0xFFFFFFFF
+            s2 = (addr_src2 + i * 4) & 0xFFFFFFFF
+            a = _read_mem_f32(mem, s1)
+            b = _read_mem_f32(mem, s2)
+            _write_mem_f32(mem, s2, a + b)
 
 
 def _exec_fvsub(
@@ -397,12 +411,16 @@ def _exec_fvsub(
     n = regs.read(inst.rd)
     addr_src1 = regs.read(inst.rs1)
     addr_src2 = regs.read(inst.rs2)
-    for i in range(n):
-        s1 = (addr_src1 + i * 4) & 0xFFFFFFFF
-        s2 = (addr_src2 + i * 4) & 0xFFFFFFFF
-        a = _read_mem_f32(mem, s1)
-        b = _read_mem_f32(mem, s2)
-        _write_mem_f32(mem, s2, a - b)
+    if _USE_ACCEL:
+        data, base = mem.get_device_data(addr_src1)
+        fvsub_f32(data, addr_src1 - base, addr_src2 - base, n)
+    else:
+        for i in range(n):
+            s1 = (addr_src1 + i * 4) & 0xFFFFFFFF
+            s2 = (addr_src2 + i * 4) & 0xFFFFFFFF
+            a = _read_mem_f32(mem, s1)
+            b = _read_mem_f32(mem, s2)
+            _write_mem_f32(mem, s2, a - b)
 
 
 def _exec_fvrelu(
@@ -418,17 +436,21 @@ def _exec_fvrelu(
     n = regs.read(inst.rd)
     addr_src = regs.read(inst.rs1)
     addr_dst = regs.read(inst.rs2)
-    for i in range(n):
-        src_addr = (addr_src + i * 4) & 0xFFFFFFFF
-        dst_addr = (addr_dst + i * 4) & 0xFFFFFFFF
-        val = _read_mem_f32(mem, src_addr)
-        if math.isnan(val):
-            result = val
-        elif val < 0.0 or (val == 0.0 and math.copysign(1.0, val) < 0.0):
-            result = 0.0
-        else:
-            result = val
-        _write_mem_f32(mem, dst_addr, result)
+    if _USE_ACCEL:
+        data, base = mem.get_device_data(addr_src)
+        fvrelu_f32(data, addr_src - base, addr_dst - base, n)
+    else:
+        for i in range(n):
+            src_addr = (addr_src + i * 4) & 0xFFFFFFFF
+            dst_addr = (addr_dst + i * 4) & 0xFFFFFFFF
+            val = _read_mem_f32(mem, src_addr)
+            if math.isnan(val):
+                result = val
+            elif val < 0.0 or (val == 0.0 and math.copysign(1.0, val) < 0.0):
+                result = 0.0
+            else:
+                result = val
+            _write_mem_f32(mem, dst_addr, result)
 
 
 def _exec_fvgelu(
@@ -444,17 +466,21 @@ def _exec_fvgelu(
     n = regs.read(inst.rd)
     addr_src = regs.read(inst.rs1)
     addr_dst = regs.read(inst.rs2)
-    for i in range(n):
-        src_addr = (addr_src + i * 4) & 0xFFFFFFFF
-        dst_addr = (addr_dst + i * 4) & 0xFFFFFFFF
-        val = _read_mem_f32(mem, src_addr)
-        if math.isnan(val):
-            result = val
-        elif math.isinf(val):
-            result = 0.0 if val < 0 else val
-        else:
-            result = fgelu(val)
-        _write_mem_f32(mem, dst_addr, result)
+    if _USE_ACCEL:
+        data, base = mem.get_device_data(addr_src)
+        fvgelu_f32(data, addr_src - base, addr_dst - base, n)
+    else:
+        for i in range(n):
+            src_addr = (addr_src + i * 4) & 0xFFFFFFFF
+            dst_addr = (addr_dst + i * 4) & 0xFFFFFFFF
+            val = _read_mem_f32(mem, src_addr)
+            if math.isnan(val):
+                result = val
+            elif math.isinf(val):
+                result = 0.0 if val < 0 else val
+            else:
+                result = fgelu(val)
+            _write_mem_f32(mem, dst_addr, result)
 
 
 def _exec_fvdiv(
@@ -472,21 +498,25 @@ def _exec_fvdiv(
     addr_src = regs.read(inst.rs1)
     addr_dst = regs.read(inst.rs2)
     divisor_bits = _f64_to_f32_bits(npu.facc)
-    divisor = struct.unpack('<f', struct.pack('<I', divisor_bits))[0]
-    for i in range(n):
-        src_addr = (addr_src + i * 4) & 0xFFFFFFFF
-        dst_addr = (addr_dst + i * 4) & 0xFFFFFFFF
-        val = _read_mem_f32(mem, src_addr)
-        if divisor == 0.0:
-            # IEEE 754: x/0 = ±inf (sign = sign(x) XOR sign(divisor)), 0/0 = NaN
-            if val == 0.0 or math.isnan(val):
-                result = float('nan')
+    if _USE_ACCEL:
+        data, base = mem.get_device_data(addr_src)
+        fvdiv_f32(data, addr_src - base, addr_dst - base, n, divisor_bits)
+    else:
+        divisor = struct.unpack('<f', struct.pack('<I', divisor_bits))[0]
+        for i in range(n):
+            src_addr = (addr_src + i * 4) & 0xFFFFFFFF
+            dst_addr = (addr_dst + i * 4) & 0xFFFFFFFF
+            val = _read_mem_f32(mem, src_addr)
+            if divisor == 0.0:
+                # IEEE 754: x/0 = ±inf (sign = sign(x) XOR sign(divisor)), 0/0 = NaN
+                if val == 0.0 or math.isnan(val):
+                    result = float('nan')
+                else:
+                    sign = math.copysign(1.0, val) * math.copysign(1.0, divisor)
+                    result = math.copysign(float('inf'), sign)
             else:
-                sign = math.copysign(1.0, val) * math.copysign(1.0, divisor)
-                result = math.copysign(float('inf'), sign)
-        else:
-            result = val / divisor
-        _write_mem_f32(mem, dst_addr, result)
+                result = val / divisor
+            _write_mem_f32(mem, dst_addr, result)
 
 
 def _exec_fvsub_scalar(
@@ -504,9 +534,13 @@ def _exec_fvsub_scalar(
     addr_src = regs.read(inst.rs1)
     addr_dst = regs.read(inst.rs2)
     scalar_bits = _f64_to_f32_bits(npu.facc)
-    scalar = struct.unpack('<f', struct.pack('<I', scalar_bits))[0]
-    for i in range(n):
-        src_addr = (addr_src + i * 4) & 0xFFFFFFFF
-        dst_addr = (addr_dst + i * 4) & 0xFFFFFFFF
-        val = _read_mem_f32(mem, src_addr)
-        _write_mem_f32(mem, dst_addr, val - scalar)
+    if _USE_ACCEL:
+        data, base = mem.get_device_data(addr_src)
+        fvsub_scalar_f32(data, addr_src - base, addr_dst - base, n, scalar_bits)
+    else:
+        scalar = struct.unpack('<f', struct.pack('<I', scalar_bits))[0]
+        for i in range(n):
+            src_addr = (addr_src + i * 4) & 0xFFFFFFFF
+            dst_addr = (addr_dst + i * 4) & 0xFFFFFFFF
+            val = _read_mem_f32(mem, src_addr)
+            _write_mem_f32(mem, dst_addr, val - scalar)

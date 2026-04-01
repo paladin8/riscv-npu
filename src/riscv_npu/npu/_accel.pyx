@@ -9,7 +9,7 @@ Build with: cythonize -i src/riscv_npu/npu/_accel.pyx
 """
 
 cimport cython
-from libc.math cimport exp as c_exp, INFINITY, NAN
+from libc.math cimport exp as c_exp, erf as c_erf, INFINITY, NAN
 from libc.string cimport memcpy
 from libc.stdint cimport int8_t, int32_t, uint32_t
 
@@ -362,3 +362,167 @@ def fvmax_f32(const unsigned char[:] data, int src, int n):
         if val > max_val:
             max_val = val
     return max_val
+
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+def fvadd_f32(unsigned char[:] data, int src1, int src2, int n):
+    """Elementwise add: dst[i] = src1[i] + src2[i], result at src2.
+
+    Args:
+        data: Raw RAM buffer (writable).
+        src1: Byte offset of first f32 array.
+        src2: Byte offset of second f32 array (also destination).
+        n: Number of elements.
+    """
+    cdef int i
+    cdef float a, b
+    for i in range(n):
+        a = _read_f32(data, src1 + i * 4)
+        b = _read_f32(data, src2 + i * 4)
+        _write_f32(data, src2 + i * 4, a + b)
+
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+def fvsub_f32(unsigned char[:] data, int src1, int src2, int n):
+    """Elementwise subtract: dst[i] = src1[i] - src2[i], result at src2.
+
+    Args:
+        data: Raw RAM buffer (writable).
+        src1: Byte offset of first f32 array.
+        src2: Byte offset of second f32 array (also destination).
+        n: Number of elements.
+    """
+    cdef int i
+    cdef float a, b
+    for i in range(n):
+        a = _read_f32(data, src1 + i * 4)
+        b = _read_f32(data, src2 + i * 4)
+        _write_f32(data, src2 + i * 4, a - b)
+
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+def fvrelu_f32(unsigned char[:] data, int src, int dst, int n):
+    """Vectorized ReLU: dst[i] = max(src[i], 0.0).
+
+    Handles -0.0 -> +0.0 and NaN -> NaN.
+
+    Args:
+        data: Raw RAM buffer (writable).
+        src: Byte offset of source f32 array.
+        dst: Byte offset of destination f32 array.
+        n: Number of elements.
+    """
+    cdef int i
+    cdef float val
+    cdef uint32_t bits
+    for i in range(n):
+        val = _read_f32(data, src + i * 4)
+        # NaN check: NaN != NaN
+        if val != val:
+            _write_f32(data, dst + i * 4, val)
+        elif val < 0.0:
+            _write_f32(data, dst + i * 4, 0.0)
+        else:
+            # Check for -0.0: bit 31 set but value == 0.0
+            memcpy(&bits, &val, 4)
+            if bits == 0x80000000:
+                _write_f32(data, dst + i * 4, 0.0)
+            else:
+                _write_f32(data, dst + i * 4, val)
+
+
+cdef float _M_SQRT1_2 = 0.7071067811865475  # 1/sqrt(2)
+
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+def fvgelu_f32(unsigned char[:] data, int src, int dst, int n):
+    """Vectorized GELU: dst[i] = 0.5 * x * (1 + erf(x / sqrt(2))).
+
+    Handles NaN -> NaN, +inf -> +inf, -inf -> 0.0.
+
+    Args:
+        data: Raw RAM buffer (writable).
+        src: Byte offset of source f32 array.
+        dst: Byte offset of destination f32 array.
+        n: Number of elements.
+    """
+    cdef int i
+    cdef float val
+    cdef double x_d, result_d
+    cdef float result
+    for i in range(n):
+        val = _read_f32(data, src + i * 4)
+        # NaN check: NaN != NaN
+        if val != val:
+            result = val
+        elif val == -INFINITY:
+            result = 0.0
+        elif val == INFINITY:
+            result = <float>INFINITY
+        else:
+            x_d = <double>val
+            result_d = 0.5 * x_d * (1.0 + c_erf(x_d * _M_SQRT1_2))
+            result = <float>result_d
+        _write_f32(data, dst + i * 4, result)
+
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.cdivision(True)
+def fvdiv_f32(unsigned char[:] data, int src, int dst, int n, unsigned int scale_bits):
+    """Divide float32 array by a float32 divisor given as IEEE bits.
+
+    For each element i:
+        dst[i] = src[i] / divisor
+
+    The divisor is provided as uint32 IEEE 754 bits.
+
+    Args:
+        data: Raw RAM buffer (writable).
+        src: Byte offset of source f32 array.
+        dst: Byte offset of destination f32 array.
+        n: Number of elements.
+        scale_bits: IEEE 754 float32 bits for the divisor.
+    """
+    cdef float divisor
+    cdef uint32_t sb = scale_bits
+    memcpy(&divisor, &sb, 4)
+    cdef int i
+    cdef float val, result
+    for i in range(n):
+        val = _read_f32(data, src + i * 4)
+        # C float division handles IEEE 754 correctly (inf, NaN, div-by-zero)
+        result = val / divisor
+        _write_f32(data, dst + i * 4, result)
+
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+def fvsub_scalar_f32(unsigned char[:] data, int src, int dst, int n, unsigned int scalar_bits):
+    """Subtract a float32 scalar from each element of a float32 array.
+
+    For each element i:
+        dst[i] = src[i] - scalar
+
+    The scalar is provided as uint32 IEEE 754 bits.
+
+    Args:
+        data: Raw RAM buffer (writable).
+        src: Byte offset of source f32 array.
+        dst: Byte offset of destination f32 array.
+        n: Number of elements.
+        scalar_bits: IEEE 754 float32 bits for the scalar.
+    """
+    cdef float scalar
+    cdef uint32_t sb = scalar_bits
+    memcpy(&scalar, &sb, 4)
+    cdef int i
+    cdef float val, result
+    for i in range(n):
+        val = _read_f32(data, src + i * 4)
+        result = val - scalar
+        _write_f32(data, dst + i * 4, result)
