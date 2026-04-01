@@ -115,12 +115,53 @@ If condition true: pc += sext(imm). Offset is relative to branch instruction add
 | 1101111 | JAL  | rd = pc + 4; pc += sext(imm) [J-type]             |
 | 1100111 | JALR | rd = pc + 4; pc = (rs1 + sext(imm)) & ~1 [I-type] |
 
-### System (opcode 1110011, funct3=000, rd=0, rs1=0)
+### System (opcode 1110011)
 
-| imm[11:0]    | name   |
-|--------------|--------|
-| 000000000000 | ECALL  |
-| 000000000001 | EBREAK |
+Dispatched by funct3. funct3=000 selects environment/trap instructions; funct3!=000 selects CSR instructions.
+
+#### Environment and trap (funct3=000)
+
+| imm[11:0]    | name   | op                                          |
+|--------------|--------|---------------------------------------------|
+| 000000000000 | ECALL  | Environment call (syscall or trap to mtvec) |
+| 000000000001 | EBREAK | Breakpoint (halts CPU)                      |
+| 001100000010 | MRET   | pc = mepc (return from machine-mode trap)   |
+
+ECALL: If a syscall handler recognizes a7, it handles the call. Otherwise, if mtvec is non-zero, traps to mtvec (writing mepc=pc, mcause=11). Otherwise halts.
+
+MRET: Returns from a machine-mode trap handler by jumping to the address stored in the `mepc` CSR.
+
+#### CSR instructions (funct3!=000)
+
+| funct3 | name   | op                               |
+|--------|--------|----------------------------------|
+| 001    | CSRRW  | rd = csr; csr = rs1              |
+| 010    | CSRRS  | rd = csr; csr = csr \| rs1       |
+| 011    | CSRRC  | rd = csr; csr = csr & ~rs1       |
+| 101    | CSRRWI | rd = csr; csr = zimm[4:0]        |
+| 110    | CSRRSI | rd = csr; csr = csr \| zimm[4:0] |
+| 111    | CSRRCI | rd = csr; csr = csr & ~zimm[4:0] |
+
+The CSR address is encoded in imm[11:0]. The `zimm` (zero-extended immediate) variants use the rs1 field as a 5-bit unsigned immediate instead of a register index.
+
+Supported CSRs:
+
+| Address | Name     | Description                               |
+|---------|----------|-------------------------------------------|
+| 0x001   | fflags   | FP exception flags (NV, DZ, OF, UF, NX)  |
+| 0x002   | frm      | FP rounding mode                          |
+| 0x003   | fcsr     | FP control/status (frm + fflags)          |
+| 0x180   | satp     | Supervisor address translation (reads 0)  |
+| 0x300   | mstatus  | Machine status                            |
+| 0x305   | mtvec    | Machine trap vector base address          |
+| 0x341   | mepc     | Machine exception program counter         |
+| 0x342   | mcause   | Machine trap cause                        |
+| 0x3A0   | pmpcfg0  | PMP configuration (reads 0)               |
+| 0x3B0   | pmpaddr0 | PMP address (reads 0)                     |
+| 0x51E   | tohost   | HTIF tohost (triggers halt when written)  |
+| 0xF14   | mhartid  | Hart ID (hardwired 0)                     |
+
+Unknown CSRs return 0 on read and silently accept writes. This is a compatibility shim — compiled C code and newlib emit CSR instructions that must not cause decode errors.
 
 ### Memory ordering (opcode 0001111)
 

@@ -599,6 +599,7 @@ Implementation files:
 | Integer instruction dispatch         | `src/riscv_npu/npu/instructions.py`                   | Called from CPU execute loop |
 | FP instruction dispatch              | `src/riscv_npu/npu/fp_instructions.py`                | Called from CPU execute loop |
 | Memory-mapped device                 | `src/riscv_npu/devices/npu.py`                        | Bus-attached register reads  |
+| Cython acceleration kernels          | `src/riscv_npu/npu/_accel.pyx`                        | Optional fast-path kernels   |
 | Decoder (opcode 0x0B, 0x2B)          | `src/riscv_npu/cpu/decode.py`                         | R/I/S-type format selection  |
 | Integer C intrinsics                 | `firmware/common/npu.h`                               | `.insn` inline assembly      |
 | FP C intrinsics                      | `firmware/common/npu_fp.h`                            | `.insn` inline assembly      |
