@@ -65,7 +65,8 @@ def execute_fp_npu(inst: Instruction, cpu: CPU) -> int:
     """Execute an FP NPU instruction (opcode 0x2B).
 
     Dispatches by funct3:
-        0: sub-dispatch by funct7 (FMACC, FVMAC, FVEXP, FVRSQRT, FVMUL, FVREDUCE, FVMAX)
+        0: sub-dispatch by funct7 (FMACC, FVMAC, FVEXP, FVRSQRT, FVMUL, FVREDUCE,
+           FVMAX, FVADD, FVSUB, FVRELU, FVGELU, FVDIV, FVSUB_SCALAR)
         1: FRELU  - FP rectified linear unit
         4: FGELU  - FP GELU activation
         5: FRSTACC - FP reset accumulator
@@ -100,6 +101,18 @@ def execute_fp_npu(inst: Instruction, cpu: CPU) -> int:
             _exec_fvreduce(inst, regs, fregs, mem)
         elif f7 == 6:
             _exec_fvmax(inst, regs, fregs, mem)
+        elif f7 == 7:
+            _exec_fvadd(inst, regs, mem)
+        elif f7 == 8:
+            _exec_fvsub(inst, regs, mem)
+        elif f7 == 9:
+            _exec_fvrelu(inst, regs, mem)
+        elif f7 == 10:
+            _exec_fvgelu(inst, regs, mem)
+        elif f7 == 11:
+            _exec_fvdiv(inst, regs, mem, npu)
+        elif f7 == 12:
+            _exec_fvsub_scalar(inst, regs, mem, npu)
         else:
             raise ValueError(f"Unknown FP NPU funct7: {f7:#09b} for funct3=0")
     elif f3 == 1:
@@ -345,3 +358,155 @@ def _exec_fvmax(
             if val > max_val:
                 max_val = val
         fregs.write_float(inst.rd, max_val)
+
+
+# ==================== Phase 11: Arrax vector instructions ====================
+
+
+def _exec_fvadd(
+    inst: Instruction,
+    regs: RegisterFile,
+    mem: MemoryBus,
+) -> None:
+    """NPU.FVADD: dst[i] = src1[i] + src2[i], result in-place at rs2.
+
+    Elementwise vector addition. rd = count, rs1 = source 1 address,
+    rs2 = source 2 / destination address.
+    """
+    n = regs.read(inst.rd)
+    addr_src1 = regs.read(inst.rs1)
+    addr_src2 = regs.read(inst.rs2)
+    for i in range(n):
+        s1 = (addr_src1 + i * 4) & 0xFFFFFFFF
+        s2 = (addr_src2 + i * 4) & 0xFFFFFFFF
+        a = _read_mem_f32(mem, s1)
+        b = _read_mem_f32(mem, s2)
+        _write_mem_f32(mem, s2, a + b)
+
+
+def _exec_fvsub(
+    inst: Instruction,
+    regs: RegisterFile,
+    mem: MemoryBus,
+) -> None:
+    """NPU.FVSUB: dst[i] = src1[i] - src2[i], result in-place at rs2.
+
+    Elementwise vector subtraction. rd = count, rs1 = source 1 address,
+    rs2 = source 2 / destination address.
+    """
+    n = regs.read(inst.rd)
+    addr_src1 = regs.read(inst.rs1)
+    addr_src2 = regs.read(inst.rs2)
+    for i in range(n):
+        s1 = (addr_src1 + i * 4) & 0xFFFFFFFF
+        s2 = (addr_src2 + i * 4) & 0xFFFFFFFF
+        a = _read_mem_f32(mem, s1)
+        b = _read_mem_f32(mem, s2)
+        _write_mem_f32(mem, s2, a - b)
+
+
+def _exec_fvrelu(
+    inst: Instruction,
+    regs: RegisterFile,
+    mem: MemoryBus,
+) -> None:
+    """NPU.FVRELU: dst[i] = max(src[i], 0.0).
+
+    Vectorized ReLU. rd = count, rs1 = source address, rs2 = dest address.
+    Edge cases: -0.0 → +0.0, NaN → NaN.
+    """
+    n = regs.read(inst.rd)
+    addr_src = regs.read(inst.rs1)
+    addr_dst = regs.read(inst.rs2)
+    for i in range(n):
+        src_addr = (addr_src + i * 4) & 0xFFFFFFFF
+        dst_addr = (addr_dst + i * 4) & 0xFFFFFFFF
+        val = _read_mem_f32(mem, src_addr)
+        if math.isnan(val):
+            result = val
+        elif val < 0.0 or (val == 0.0 and math.copysign(1.0, val) < 0.0):
+            result = 0.0
+        else:
+            result = val
+        _write_mem_f32(mem, dst_addr, result)
+
+
+def _exec_fvgelu(
+    inst: Instruction,
+    regs: RegisterFile,
+    mem: MemoryBus,
+) -> None:
+    """NPU.FVGELU: dst[i] = gelu(src[i]).
+
+    Vectorized GELU activation. rd = count, rs1 = source, rs2 = dest.
+    Edge cases: NaN → NaN, +inf → +inf, -inf → 0.0.
+    """
+    n = regs.read(inst.rd)
+    addr_src = regs.read(inst.rs1)
+    addr_dst = regs.read(inst.rs2)
+    for i in range(n):
+        src_addr = (addr_src + i * 4) & 0xFFFFFFFF
+        dst_addr = (addr_dst + i * 4) & 0xFFFFFFFF
+        val = _read_mem_f32(mem, src_addr)
+        if math.isnan(val):
+            result = val
+        elif math.isinf(val):
+            result = 0.0 if val < 0 else val
+        else:
+            result = fgelu(val)
+        _write_mem_f32(mem, dst_addr, result)
+
+
+def _exec_fvdiv(
+    inst: Instruction,
+    regs: RegisterFile,
+    mem: MemoryBus,
+    npu: NpuState,
+) -> None:
+    """NPU.FVDIV: dst[i] = src[i] / (float32)facc.
+
+    Divide each element by the FP accumulator scalar. rd = count,
+    rs1 = source address, rs2 = dest address. Accumulator is NOT modified.
+    """
+    n = regs.read(inst.rd)
+    addr_src = regs.read(inst.rs1)
+    addr_dst = regs.read(inst.rs2)
+    divisor_bits = _f64_to_f32_bits(npu.facc)
+    divisor = struct.unpack('<f', struct.pack('<I', divisor_bits))[0]
+    for i in range(n):
+        src_addr = (addr_src + i * 4) & 0xFFFFFFFF
+        dst_addr = (addr_dst + i * 4) & 0xFFFFFFFF
+        val = _read_mem_f32(mem, src_addr)
+        if divisor == 0.0:
+            # IEEE 754: x/0 = ±inf (sign = sign(x) XOR sign(divisor)), 0/0 = NaN
+            if val == 0.0 or math.isnan(val):
+                result = float('nan')
+            else:
+                sign = math.copysign(1.0, val) * math.copysign(1.0, divisor)
+                result = math.copysign(float('inf'), sign)
+        else:
+            result = val / divisor
+        _write_mem_f32(mem, dst_addr, result)
+
+
+def _exec_fvsub_scalar(
+    inst: Instruction,
+    regs: RegisterFile,
+    mem: MemoryBus,
+    npu: NpuState,
+) -> None:
+    """NPU.FVSUB_SCALAR: dst[i] = src[i] - (float32)facc.
+
+    Subtract the FP accumulator scalar from each element. rd = count,
+    rs1 = source address, rs2 = dest address. Accumulator is NOT modified.
+    """
+    n = regs.read(inst.rd)
+    addr_src = regs.read(inst.rs1)
+    addr_dst = regs.read(inst.rs2)
+    scalar_bits = _f64_to_f32_bits(npu.facc)
+    scalar = struct.unpack('<f', struct.pack('<I', scalar_bits))[0]
+    for i in range(n):
+        src_addr = (addr_src + i * 4) & 0xFFFFFFFF
+        dst_addr = (addr_dst + i * 4) & 0xFFFFFFFF
+        val = _read_mem_f32(mem, src_addr)
+        _write_mem_f32(mem, dst_addr, val - scalar)
