@@ -323,15 +323,21 @@ Register conventions for vector memory operations: `rd` = element count (from in
 
 ### R-type compute (opcode 0x2B, funct3 = 000)
 
-| funct7  | funct3 | name          | op                                                     |
-|---------|--------|---------------|--------------------------------------------------------|
-| 0000000 | 000    | NPU.FMACC     | facc += f[rs1] × f[rs2] (double-precision accumulate)  |
-| 0000001 | 000    | NPU.FVMAC     | facc += dot(mem_f32[rs1..+rd], mem_f32[rs2..+rd])      |
-| 0000010 | 000    | NPU.FVEXP     | mem_f32[rs2+i*4] = exp(mem_f32[rs1+i*4]), i in 0..rd-1 |
-| 0000011 | 000    | NPU.FVRSQRT   | f[rd] = 1/sqrt(mem_f32[rs1])                           |
-| 0000100 | 000    | NPU.FVMUL     | mem_f32[rs2+i*4] = mem_f32[rs1+i*4] × (float32)facc    |
-| 0000101 | 000    | NPU.FVREDUCE  | f[rd] = sum(mem_f32[rs1+i*4]), i in 0..rs2-1           |
-| 0000110 | 000    | NPU.FVMAX     | f[rd] = max(mem_f32[rs1+i*4]), i in 0..rs2-1           |
+| funct7  | funct3 | name              | op                                                     |
+|---------|--------|-------------------|--------------------------------------------------------|
+| 0000000 | 000    | NPU.FMACC         | facc += f[rs1] × f[rs2] (double-precision accumulate)  |
+| 0000001 | 000    | NPU.FVMAC         | facc += dot(mem_f32[rs1..+rd], mem_f32[rs2..+rd])      |
+| 0000010 | 000    | NPU.FVEXP         | mem_f32[rs2+i*4] = exp(mem_f32[rs1+i*4]), i in 0..rd-1 |
+| 0000011 | 000    | NPU.FVRSQRT       | f[rd] = 1/sqrt(mem_f32[rs1])                           |
+| 0000100 | 000    | NPU.FVMUL         | mem_f32[rs2+i*4] = mem_f32[rs1+i*4] × (float32)facc    |
+| 0000101 | 000    | NPU.FVREDUCE      | f[rd] = sum(mem_f32[rs1+i*4]), i in 0..rs2-1           |
+| 0000110 | 000    | NPU.FVMAX         | f[rd] = max(mem_f32[rs1+i*4]), i in 0..rs2-1           |
+| 0000111 | 000    | NPU.FVADD         | mem_f32[rs2+i*4] = mem_f32[rs1+i*4] + mem_f32[rs2+i*4] |
+| 0001000 | 000    | NPU.FVSUB         | mem_f32[rs2+i*4] = mem_f32[rs1+i*4] - mem_f32[rs2+i*4] |
+| 0001001 | 000    | NPU.FVRELU        | mem_f32[rs2+i*4] = max(mem_f32[rs1+i*4], 0.0)          |
+| 0001010 | 000    | NPU.FVGELU        | mem_f32[rs2+i*4] = gelu(mem_f32[rs1+i*4])              |
+| 0001011 | 000    | NPU.FVDIV         | mem_f32[rs2+i*4] = mem_f32[rs1+i*4] / (float32)facc    |
+| 0001100 | 000    | NPU.FVSUB_SCALAR  | mem_f32[rs2+i*4] = mem_f32[rs1+i*4] - (float32)facc    |
 
 ### R-type scalar activations (opcode 0x2B)
 

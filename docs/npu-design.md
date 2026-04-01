@@ -3,7 +3,7 @@
 The Neural Processing Unit (NPU) is a custom coprocessor embedded in the RISC-V pipeline. It provides two instruction sets:
 
 - **Integer NPU** (opcode `0x0B`, custom-0): 14 instructions for quantized int8 inference
-- **Floating-point NPU** (opcode `0x2B`, custom-1): 10 instructions for FP32 inference
+- **Floating-point NPU** (opcode `0x2B`, custom-1): 16 instructions for FP32 inference
 
 Both share the same architectural pattern — scalar accumulator operations, activation functions, and vectorized memory operations — but target different precision domains.
 
@@ -442,6 +442,112 @@ Finds the maximum float32 value from `n` elements in memory. Returns -inf if cou
 
 **Use case**: Softmax numerical stability: subtract the max score before exponentiation.
 
+### NPU.FVADD — FP Vector Add (Phase 11)
+
+```
+funct3 = 000, funct7 = 0000111    Format: R-type
+Syntax: NPU.FVADD rd, rs1, rs2
+```
+
+```
+n = regs[rd]
+for i in 0..n-1:
+    mem_f32[regs[rs2] + i*4] = mem_f32[regs[rs1] + i*4] + mem_f32[regs[rs2] + i*4]
+```
+
+Elementwise addition. Result stored in-place at rs2. Source and destination overlap (rs1 == rs2) is the intended usage pattern.
+
+**Use case**: Residual connections, bias addition, elementwise array arithmetic.
+
+### NPU.FVSUB — FP Vector Subtract (Phase 11)
+
+```
+funct3 = 000, funct7 = 0001000    Format: R-type
+Syntax: NPU.FVSUB rd, rs1, rs2
+```
+
+```
+n = regs[rd]
+for i in 0..n-1:
+    mem_f32[regs[rs2] + i*4] = mem_f32[regs[rs1] + i*4] - mem_f32[regs[rs2] + i*4]
+```
+
+Elementwise subtraction: `rs1 - rs2`, result at rs2. Elements processed in ascending order.
+
+**Use case**: Elementwise array arithmetic, gradient computation.
+
+### NPU.FVRELU — FP Vector ReLU (Phase 11)
+
+```
+funct3 = 000, funct7 = 0001001    Format: R-type
+Syntax: NPU.FVRELU rd, rs1, rs2
+```
+
+```
+n = regs[rd]
+for i in 0..n-1:
+    val = mem_f32[regs[rs1] + i*4]
+    mem_f32[regs[rs2] + i*4] = max(val, 0.0)
+```
+
+Vectorized ReLU activation. Source and destination may overlap. Edge cases: -0.0 produces +0.0, NaN produces NaN.
+
+**Use case**: ReLU activation applied element-wise to an entire array in one instruction.
+
+### NPU.FVGELU — FP Vector GELU (Phase 11)
+
+```
+funct3 = 000, funct7 = 0001010    Format: R-type
+Syntax: NPU.FVGELU rd, rs1, rs2
+```
+
+```
+n = regs[rd]
+for i in 0..n-1:
+    x = mem_f32[regs[rs1] + i*4]
+    mem_f32[regs[rs2] + i*4] = 0.5 * x * (1 + erf(x / sqrt(2)))
+```
+
+Vectorized GELU activation. Source and destination may overlap. Edge cases: NaN produces NaN, +inf produces +inf, -inf produces 0.0.
+
+**Use case**: GELU activation applied to an entire array in one instruction for transformer FFN layers.
+
+### NPU.FVDIV — FP Vector Divide by Accumulator (Phase 11)
+
+```
+funct3 = 000, funct7 = 0001011    Format: R-type
+Syntax: NPU.FVDIV rd, rs1, rs2
+```
+
+```
+n = regs[rd]
+divisor = (float32)facc
+for i in 0..n-1:
+    mem_f32[regs[rs2] + i*4] = mem_f32[regs[rs1] + i*4] / divisor
+```
+
+Divides each element by the FP accumulator scalar (rounded to float32). Counterpart to FVMUL. The accumulator is NOT modified. Division by zero follows IEEE 754: x/0 = ±inf, 0/0 = NaN.
+
+**Use case**: Softmax normalization (divide by sum of exponentials).
+
+### NPU.FVSUB_SCALAR — FP Vector Subtract Accumulator (Phase 11)
+
+```
+funct3 = 000, funct7 = 0001100    Format: R-type
+Syntax: NPU.FVSUB_SCALAR rd, rs1, rs2
+```
+
+```
+n = regs[rd]
+scalar = (float32)facc
+for i in 0..n-1:
+    mem_f32[regs[rs2] + i*4] = mem_f32[regs[rs1] + i*4] - scalar
+```
+
+Subtracts the FP accumulator scalar from each element. The accumulator is NOT modified. Source and destination may overlap.
+
+**Use case**: Softmax numerical stability (subtract max before exponentiation).
+
 ## Memory-Mapped Registers
 
 The NPU exposes read-only status registers at base address `0x20000000` for debugger inspection and diagnostic firmware:
@@ -463,7 +569,7 @@ The FP accumulator is exposed as two 32-bit words containing the raw IEEE 754 do
 
 ## C Intrinsics
 
-The header `firmware/common/npu.h` provides inline assembly wrappers using the `.insn` directive:
+The header `firmware/common/npu.h` provides `static inline` functions with inline assembly using the `.insn` directive:
 
 ```c
 #include "npu.h"
@@ -482,41 +588,47 @@ int32_t z = NPU_QMUL(a, scale);
 int32_t c = NPU_CLAMP(wide_val);
 ```
 
-Available macros/functions:
+Available functions (all `static inline`):
 
-| Intrinsic                    | Signature                              | Instruction  |
-|------------------------------|----------------------------------------|--------------|
-| `NPU_MACC(a, b)`             | macro, no return                       | NPU.MACC     |
-| `NPU_VMAC(a, b, n)`          | macro, no return                       | NPU.VMAC     |
-| `NPU_RSTACC()`               | `int32_t NPU_RSTACC(void)`             | NPU.RSTACC   |
-| `NPU_RELU(src)`              | `int32_t NPU_RELU(int32_t)`            | NPU.RELU     |
-| `NPU_GELU(src)`              | `int32_t NPU_GELU(int32_t)`            | NPU.GELU     |
-| `NPU_QMUL(a, b)`             | `int32_t NPU_QMUL(int32_t, int32_t)`   | NPU.QMUL     |
-| `NPU_CLAMP(src)`             | `int32_t NPU_CLAMP(int32_t)`           | NPU.CLAMP    |
-| `NPU_VEXP(src, dst, n)`      | macro, no return                       | NPU.VEXP     |
-| `NPU_VRSQRT(addr)`           | `int32_t NPU_VRSQRT(void *)`           | NPU.VRSQRT   |
-| `NPU_VMUL(src, dst, n)`      | macro, no return                       | NPU.VMUL     |
-| `NPU_VREDUCE(addr, n)`       | `int32_t NPU_VREDUCE(void *, int)`     | NPU.VREDUCE  |
-| `NPU_VMAX(addr, n)`          | `int32_t NPU_VMAX(void *, int)`        | NPU.VMAX     |
+| Intrinsic                    | Signature                                  | Instruction  |
+|------------------------------|--------------------------------------------|--------------|
+| `NPU_MACC(a, b)`             | `void NPU_MACC(int32_t, int32_t)`          | NPU.MACC     |
+| `NPU_VMAC(addr_a, addr_b, n)`| `void NPU_VMAC(void *, void *, int)`       | NPU.VMAC     |
+| `NPU_RSTACC()`               | `int32_t NPU_RSTACC(void)`                 | NPU.RSTACC   |
+| `NPU_RELU(src)`              | `int32_t NPU_RELU(int32_t)`                | NPU.RELU     |
+| `NPU_GELU(src)`              | `int32_t NPU_GELU(int32_t)`                | NPU.GELU     |
+| `NPU_QMUL(a, b)`             | `int32_t NPU_QMUL(int32_t, int32_t)`       | NPU.QMUL     |
+| `NPU_CLAMP(src)`             | `int32_t NPU_CLAMP(int32_t)`               | NPU.CLAMP    |
+| `NPU_VEXP(src, dst, n)`      | `void NPU_VEXP(void *, void *, int)`       | NPU.VEXP     |
+| `NPU_VRSQRT(addr)`           | `int32_t NPU_VRSQRT(void *)`               | NPU.VRSQRT   |
+| `NPU_VMUL(src, dst, n)`      | `void NPU_VMUL(void *, void *, int)`       | NPU.VMUL     |
+| `NPU_VREDUCE(addr, n)`       | `int32_t NPU_VREDUCE(void *, int)`          | NPU.VREDUCE  |
+| `NPU_VMAX(addr, n)`          | `int32_t NPU_VMAX(void *, int)`             | NPU.VMAX     |
 
 LDVEC/STVEC do not have C intrinsics yet.
 
 ### FP NPU Intrinsics
 
-FP NPU intrinsics use the `.insn r` directive with opcode `0x2B`. Scalar results go to float registers.
+FP NPU intrinsics are `static inline` functions using the `.insn r` directive with opcode `0x2B`. Scalar results go to float registers.
 
-| Intrinsic                       | Signature                              | Instruction  |
-|---------------------------------|----------------------------------------|--------------|
-| `NPU_FMACC(a, b)`               | macro, no return (float args)          | NPU.FMACC    |
-| `NPU_FVMAC(a, b, n)`            | macro, no return                       | NPU.FVMAC    |
-| `NPU_FRSTACC()`                 | `float NPU_FRSTACC(void)`              | NPU.FRSTACC  |
-| `NPU_FRELU(src)`                | `float NPU_FRELU(float)`               | NPU.FRELU    |
-| `NPU_FGELU(src)`                | `float NPU_FGELU(float)`               | NPU.FGELU    |
-| `NPU_FVEXP(src, dst, n)`        | macro, no return                       | NPU.FVEXP    |
-| `NPU_FVRSQRT(addr)`             | `float NPU_FVRSQRT(void *)`            | NPU.FVRSQRT  |
-| `NPU_FVMUL(src, dst, n)`        | macro, no return                       | NPU.FVMUL    |
-| `NPU_FVREDUCE(addr, n)`         | `float NPU_FVREDUCE(void *, int)`      | NPU.FVREDUCE |
-| `NPU_FVMAX(addr, n)`            | `float NPU_FVMAX(void *, int)`         | NPU.FVMAX    |
+| Intrinsic                           | Signature                                  | Instruction      |
+|-------------------------------------|------------------------------------------  |------------------|
+| `NPU_FMACC(a, b)`                   | `void NPU_FMACC(float, float)`             | NPU.FMACC        |
+| `NPU_FVMAC(addr_a, addr_b, len)`    | `void NPU_FVMAC(void *, void *, int)`      | NPU.FVMAC        |
+| `NPU_FRSTACC()`                     | `float NPU_FRSTACC(void)`                  | NPU.FRSTACC      |
+| `NPU_FRELU(src)`                    | `float NPU_FRELU(float)`                   | NPU.FRELU        |
+| `NPU_FGELU(src)`                    | `float NPU_FGELU(float)`                   | NPU.FGELU        |
+| `NPU_FVEXP(src, dst, n)`            | `void NPU_FVEXP(void *, void *, int)`      | NPU.FVEXP        |
+| `NPU_FVRSQRT(addr)`                 | `float NPU_FVRSQRT(void *)`                | NPU.FVRSQRT      |
+| `NPU_FVMUL(src, dst, n)`            | `void NPU_FVMUL(void *, void *, int)`      | NPU.FVMUL        |
+| `NPU_FVREDUCE(addr, n)`             | `float NPU_FVREDUCE(void *, int)`           | NPU.FVREDUCE     |
+| `NPU_FVMAX(addr, n)`                | `float NPU_FVMAX(void *, int)`              | NPU.FVMAX        |
+| `NPU_FVADD(src1, src2, n)`          | `void NPU_FVADD(void *, void *, int)`      | NPU.FVADD        |
+| `NPU_FVSUB(src1, src2, n)`          | `void NPU_FVSUB(void *, void *, int)`      | NPU.FVSUB        |
+| `NPU_FVRELU(src, dst, n)`           | `void NPU_FVRELU(void *, void *, int)`     | NPU.FVRELU       |
+| `NPU_FVGELU(src, dst, n)`           | `void NPU_FVGELU(void *, void *, int)`     | NPU.FVGELU       |
+| `NPU_FVDIV(src, dst, n)`            | `void NPU_FVDIV(void *, void *, int)`      | NPU.FVDIV        |
+| `NPU_FVSUB_SCALAR(src, dst, n)`     | `void NPU_FVSUB_SCALAR(void *, void *, int)` | NPU.FVSUB_SCALAR |
 
 ## Typical Inference Pipelines
 
@@ -574,7 +686,7 @@ for i in 0..N-1:
 
 ### FP32 Transformer Pipeline
 
-The character-level transformer uses all 10 FP NPU instructions for a complete float32 inference pipeline:
+The character-level transformer uses 10 of the 16 FP NPU instructions for a complete float32 inference pipeline:
 
 - **Embedding**: Simple float addition (token_embed + pos_embed)
 - **Linear layers**: FVMAC + FRSTACC for dot products, FADD.S for bias

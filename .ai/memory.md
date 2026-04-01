@@ -1,13 +1,13 @@
 # Project State
 
 ## Status
-File I/O syscalls COMPLETE. 1044 tests passing, 0 failures.
-All 10 phases + file I/O extension complete.
+Phase 11 (arrax NPU vector instructions) COMPLETE. 1079 tests passing, 0 failures.
+All 11 phases complete.
 
 ## What's implemented
 - RV32IMF: 75 instructions (41 base + 8 M extension + 26 F extension)
-- Custom NPU: 24 instructions (14 int opcode 0x0B + 10 FP opcode 0x2B)
-- Total: 99 instructions
+- Custom NPU: 30 instructions (14 int opcode 0x0B + 16 FP opcode 0x2B)
+- Total: 105 instructions
 - ELF loader, CSR shim, machine-mode traps, MemoryBus, UART, SyscallHandler
 - Syscalls: read, write, exit, brk, openat, close, lseek (7 total)
 - File I/O: fd table, sandbox (--fs-root), O_CREAT/O_TRUNC/O_APPEND/O_RDWR
@@ -20,7 +20,7 @@ All 10 phases + file I/O extension complete.
 - Cython NPU acceleration: _accel.pyx with 10 vector kernels, try-import fallback
 
 ## Key patterns
-- FP NPU: opcode 0x2B, funct3 selects group, funct7 sub-dispatch for funct3=0
+- FP NPU: opcode 0x2B, funct3 selects group, funct7 sub-dispatch for funct3=0 (0-6 original, 7-12 arrax)
 - CRITICAL: NPU_FVMAC/FMACC accumulate onto facc without clearing
 - Toolchain: riscv64-unknown-elf-gcc -march=rv32imf -mabi=ilp32f
 - 32-bit masking (& 0xFFFFFFFF) after every arithmetic op

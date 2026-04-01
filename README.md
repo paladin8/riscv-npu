@@ -8,8 +8,8 @@ RISC-V (RV32IMF) emulator in Python with custom NPU instructions for neural netw
 |-----------------------------|-------------------------------------------------------------------|
 | ISA support                 | RV32I (41 instructions) + M extension (8) + F extension (26)      |
 | Custom NPU (integer)        | 14 instructions for quantized int8 inference (opcode 0x0B)        |
-| Custom NPU (floating-point) | 10 instructions for float32 inference (opcode 0x2B)               |
-| Total instructions          | 99 (75 standard RISC-V + 24 custom NPU)                           |
+| Custom NPU (floating-point) | 16 instructions for float32 inference (opcode 0x2B)               |
+| Total instructions          | 105 (75 standard RISC-V + 30 custom NPU)                          |
 | Memory model                | 4 MB RAM, memory-mapped UART (16550), memory-mapped NPU regs      |
 | ELF loader                  | Full ELF32 RISC-V parser with symbol table lookup                 |
 | Syscalls                    | Linux ABI: read, write, openat, close, lseek, exit, brk           |
@@ -217,26 +217,32 @@ Designed for quantized int8 inference with a 64-bit integer accumulator. Key ins
 | NPU.LDVEC     | Load 4 bytes into vector register                          |
 | NPU.STVEC     | Store vector register to memory                            |
 
-### Floating-point NPU (opcode 0x2B) -- 10 instructions
+### Floating-point NPU (opcode 0x2B) -- 16 instructions
 
 Designed for float32 inference with a float64 accumulator. Key instructions:
 
-| Instruction   | Operation                                                  |
-|---------------|------------------------------------------------------------|
-| NPU.FVMAC     | FP vector dot product: facc += dot(f32[rs1], f32[rs2], n)  |
-| NPU.FRSTACC   | Read facc (rounded to f32) to f[rd], reset to zero         |
-| NPU.FRELU     | FP scalar ReLU: f[rd] = max(f[rs1], 0.0)                   |
-| NPU.FGELU     | FP scalar GELU at full precision                           |
-| NPU.FVEXP     | Vector exp over float32 array                              |
-| NPU.FVRSQRT   | Scalar 1/sqrt from memory to float register                |
-| NPU.FVMUL     | Vector scale by facc value                                 |
-| NPU.FVREDUCE  | Vector sum reduction to float register                     |
-| NPU.FVMAX     | Vector max reduction to float register                     |
-| NPU.FMACC     | Scalar FP multiply-accumulate                              |
+| Instruction      | Operation                                                  |
+|------------------|------------------------------------------------------------|
+| NPU.FVMAC        | FP vector dot product: facc += dot(f32[rs1], f32[rs2], n)  |
+| NPU.FRSTACC      | Read facc (rounded to f32) to f[rd], reset to zero         |
+| NPU.FRELU        | FP scalar ReLU: f[rd] = max(f[rs1], 0.0)                   |
+| NPU.FGELU        | FP scalar GELU at full precision                           |
+| NPU.FVEXP        | Vector exp over float32 array                              |
+| NPU.FVRSQRT      | Scalar 1/sqrt from memory to float register                |
+| NPU.FVMUL        | Vector scale by facc value                                 |
+| NPU.FVREDUCE     | Vector sum reduction to float register                     |
+| NPU.FVMAX        | Vector max reduction to float register                     |
+| NPU.FMACC        | Scalar FP multiply-accumulate                              |
+| NPU.FVADD        | Elementwise vector add, result in-place at rs2             |
+| NPU.FVSUB        | Elementwise vector subtract, result in-place at rs2        |
+| NPU.FVRELU       | Vectorized ReLU over float32 array                         |
+| NPU.FVGELU       | Vectorized GELU over float32 array                         |
+| NPU.FVDIV        | Vector divide by facc scalar                               |
+| NPU.FVSUB_SCALAR | Vector subtract facc scalar from each element              |
 
 ## Documentation
 
-- [ISA Reference](docs/isa-reference.md) -- complete quick reference for all 99 instructions
+- [ISA Reference](docs/isa-reference.md) -- complete quick reference for all 105 instructions
 - [NPU Design](docs/npu-design.md) -- detailed NPU architecture, encoding, C intrinsics, and inference pipelines
 - [GDB Remote Debugging](docs/gdb.md) -- GDB stub usage, supported commands, register layout, protocol details
 - [Performance Profile](docs/performance.md) -- profiling analysis and hardware acceleration recommendations
