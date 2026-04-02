@@ -8,6 +8,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+numpy = ["numpy>=1.26.0"]
 torch = [
     "torch",
     "torchvision",

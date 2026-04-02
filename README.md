@@ -138,6 +138,62 @@ make -C firmware/transformer
 
 The MNIST script looks up a test image by index (0-99) from `firmware/mnist/test_data.py` and writes it into the `test_image` symbol. The transformer script converts a text prompt into token bytes and injects them into the firmware's input buffers. Both require `--write` to load inputs, so the raw `uv run python -m riscv_npu run` command won't produce meaningful output.
 
+## Library API
+
+The emulator can be used as an importable Python library, not just a CLI tool.
+
+```python
+from riscv_npu import Emulator
+
+emu = Emulator()
+emu.load_elf("firmware/hello/hello.elf")
+result = emu.run()
+
+print(result.exit_code)    # 0
+print(result.cycles)       # 1423
+print(emu.stdout)          # b'Hello, World!\n'
+```
+
+### Array I/O
+
+Write and read typed arrays by symbol name or raw address:
+
+```python
+import numpy as np
+from riscv_npu import Emulator
+
+emu = Emulator()
+emu.load_elf("firmware/npu_add/npu_add.elf")
+
+emu.write_f32("A", np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32))
+emu.write_f32("B", np.array([5.0, 6.0, 7.0, 8.0], dtype=np.float32))
+result = emu.run()
+
+out = emu.read_f32("out", n=4)   # [6.0, 8.0, 10.0, 12.0]
+```
+
+Address-based access works without symbols: `emu.write_f32(0x80010000, data)`.
+
+### Re-running with different inputs
+
+```python
+emu.load_elf("kernel.elf")
+emu.write_f32("input", data_1)
+result_1 = emu.run()
+
+emu.reset()  # reset CPU/FPU/NPU state, keep RAM + ELF
+emu.write_f32("input", data_2)
+result_2 = emu.run()
+```
+
+### Installing as a dependency
+
+```bash
+uv add --editable ../riscv-npu
+```
+
+numpy is an optional dependency -- install with `pip install riscv-npu[numpy]` to use the `write_f32`/`read_f32`/`write_i32`/`read_i32` methods. The `write_bytes`/`read_bytes` methods and core emulation work without numpy.
+
 ## Testing
 
 ```bash
