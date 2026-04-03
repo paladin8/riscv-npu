@@ -9,6 +9,7 @@ RISC-V (RV32IMF) emulator in Python with custom NPU instructions for neural netw
 | ISA support                 | RV32I (41 instructions) + M extension (8) + F extension (26)      |
 | Custom NPU (integer)        | 14 instructions for quantized int8 inference (opcode 0x0B)        |
 | Custom NPU (floating-point) | 16 instructions for float32 inference (opcode 0x2B)               |
+| NPU vector length limit     | 256 bytes/op (256 int8 or 64 float32 elements), fault on overflow |
 | Total instructions          | 105 (75 standard RISC-V + 30 custom NPU)                          |
 | Memory model                | 4 MB RAM, memory-mapped UART (16550), memory-mapped NPU regs      |
 | ELF loader                  | Full ELF32 RISC-V parser with symbol table lookup                 |

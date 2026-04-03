@@ -8,9 +8,9 @@ static inline void NPU_MACC(int32_t a, int32_t b) {
 }
 
 /* VMAC: acc += dot(mem_i8[a..+n], mem_i8[b..+n]) — integer vector dot product */
-static inline void NPU_VMAC(void *addr_a, void *addr_b, int len) {
-    register void *_a asm("a0") = addr_a;
-    register void *_b asm("a1") = addr_b;
+static inline void NPU_VMAC(const void *addr_a, const void *addr_b, int len) {
+    register const void *_a asm("a0") = addr_a;
+    register const void *_b asm("a1") = addr_b;
     register int _n asm("a2") = len;
     asm volatile(".insn r 0x0B, 0x0, 0x01, a2, a0, a1"
                  :: "r"(_a), "r"(_b), "r"(_n) : "memory");

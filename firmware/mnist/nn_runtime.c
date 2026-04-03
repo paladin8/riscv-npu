@@ -26,9 +26,15 @@ void linear_relu(const uint8_t *input, const int8_t *weights,
         /* Clear accumulator */
         NPU_RSTACC();
 
-        /* Vectorized dot product: acc += input_signed . weights_row */
+        /* Vectorized dot product: acc += input_signed . weights_row
+         * NPU max vector length is 256 bytes = 256 int8 elements.
+         * Split into chunks when in_dim > 256. */
         const int8_t *row = &weights[i * in_dim];
-        NPU_VMAC(input_signed, row, in_dim);
+        for (int off = 0; off < in_dim; off += 256) {
+            int chunk = in_dim - off;
+            if (chunk > 256) chunk = 256;
+            NPU_VMAC(&input_signed[off], &row[off], chunk);
+        }
 
         /* Read accumulator and add pre-adjusted bias */
         int32_t acc = NPU_RSTACC();
@@ -55,9 +61,14 @@ void linear_raw(const int8_t *input, const int8_t *weights,
         /* Clear accumulator */
         NPU_RSTACC();
 
-        /* Vectorized dot product: acc += input . weights_row */
+        /* Vectorized dot product: acc += input . weights_row
+         * NPU max vector length is 256 bytes = 256 int8 elements. */
         const int8_t *row = &weights[i * in_dim];
-        NPU_VMAC(input, row, in_dim);
+        for (int off = 0; off < in_dim; off += 256) {
+            int chunk = in_dim - off;
+            if (chunk > 256) chunk = 256;
+            NPU_VMAC(&input[off], &row[off], chunk);
+        }
 
         /* Read accumulator and add bias */
         int32_t acc = NPU_RSTACC();

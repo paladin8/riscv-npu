@@ -60,7 +60,13 @@ static void linear(
     float *output, int out_dim
 ) {
     for (int i = 0; i < out_dim; i++) {
-        NPU_FVMAC(&weight[i * in_dim], input, in_dim);
+        /* NPU max vector length is 256 bytes = 64 float32 elements.
+         * Split dot product into chunks when in_dim > 64. */
+        for (int off = 0; off < in_dim; off += 64) {
+            int chunk = in_dim - off;
+            if (chunk > 64) chunk = 64;
+            NPU_FVMAC(&weight[i * in_dim + off], &input[off], chunk);
+        }
         output[i] = NPU_FRSTACC() + bias[i];
     }
 }

@@ -280,6 +280,17 @@ Opcode `0x0B` (custom-0 space).
 - acc_lo, acc_hi: 32-bit halves of 64-bit accumulator
 - vreg[0..3]: four registers, each 4 × int8
 
+### Vector length limit
+
+All vector instructions enforce a maximum of **256 bytes** per operation. Exceeding this limit raises a hardware fault (`NpuVectorLengthFault`).
+
+| Element type | Max elements per call |
+|--------------|-----------------------|
+| int8         | 256                   |
+| int32        | 64                    |
+
+For dot products exceeding 256 bytes (e.g. MNIST's 784-element input), firmware must loop in chunks. The accumulator persists across calls, so chunked VMAC produces the same result as a single large call.
+
 ### R-type compute (opcode 0x0B)
 
 | funct7  | funct3 | name        | op                                                    |
@@ -320,6 +331,8 @@ R-type: funct7[31:25]  rs2[24:20]  rs1[19:15]  funct3[14:12]  rd[11:7]  0x2B[6:0
 ```
 
 Register conventions for vector memory operations: `rd` = element count (from integer register), `rs1` = source address (integer register), `rs2` = destination address (integer register). Scalar results write to float register f[rd].
+
+**Vector length limit:** All FP vector instructions enforce a maximum of **256 bytes** (64 float32 elements) per operation. Exceeding this limit raises a hardware fault. For larger dot products, firmware must loop in chunks — the accumulator persists across calls.
 
 ### R-type compute (opcode 0x2B, funct3 = 000)
 

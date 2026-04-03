@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from typing import Any
 
 from ..cpu.decode import Instruction
-from .engine import NpuState, facc_add, facc_reset, fgelu
+from .engine import NpuState, facc_add, facc_reset, fgelu, _check_vector_length
 
 try:
     from ._accel import (
@@ -161,6 +161,7 @@ def _exec_fvmac(
     adds to the float64 accumulator. Does NOT reset the accumulator.
     """
     n = regs.read(inst.rd)
+    _check_vector_length(n, 4)
     addr_a = regs.read(inst.rs1)
     addr_b = regs.read(inst.rs2)
     if _USE_ACCEL:
@@ -232,6 +233,7 @@ def _exec_fvexp(
     rs2 as destination address. Elements are float32 (4 bytes each).
     """
     n = regs.read(inst.rd)
+    _check_vector_length(n, 4)
     addr_src = regs.read(inst.rs1)
     addr_dst = regs.read(inst.rs2)
     if _USE_ACCEL:
@@ -293,6 +295,7 @@ def _exec_fvmul(
     The accumulator is NOT modified.
     """
     n = regs.read(inst.rd)
+    _check_vector_length(n, 4)
     addr_src = regs.read(inst.rs1)
     addr_dst = regs.read(inst.rs2)
     # Round facc to float32 for scaling (handles overflow to +/-inf)
@@ -322,6 +325,7 @@ def _exec_fvreduce(
     source address from integer register rs1.
     """
     n = regs.read(inst.rs2)
+    _check_vector_length(n, 4)
     addr_src = regs.read(inst.rs1)
     if _USE_ACCEL:
         data, base = mem.get_device_data(addr_src)
@@ -347,6 +351,7 @@ def _exec_fvmax(
     Count from integer register rs2, source address from integer register rs1.
     """
     n = regs.read(inst.rs2)
+    _check_vector_length(n, 4)
     addr_src = regs.read(inst.rs1)
     if n == 0:
         fregs.write_float(inst.rd, float('-inf'))
@@ -384,6 +389,7 @@ def _exec_fvadd(
     rs2 = source 2 / destination address.
     """
     n = regs.read(inst.rd)
+    _check_vector_length(n, 4)
     addr_src1 = regs.read(inst.rs1)
     addr_src2 = regs.read(inst.rs2)
     if _USE_ACCEL:
@@ -409,6 +415,7 @@ def _exec_fvsub(
     rs2 = source 2 / destination address.
     """
     n = regs.read(inst.rd)
+    _check_vector_length(n, 4)
     addr_src1 = regs.read(inst.rs1)
     addr_src2 = regs.read(inst.rs2)
     if _USE_ACCEL:
@@ -434,6 +441,7 @@ def _exec_fvrelu(
     Edge cases: -0.0 → +0.0, NaN → NaN.
     """
     n = regs.read(inst.rd)
+    _check_vector_length(n, 4)
     addr_src = regs.read(inst.rs1)
     addr_dst = regs.read(inst.rs2)
     if _USE_ACCEL:
@@ -464,6 +472,7 @@ def _exec_fvgelu(
     Edge cases: NaN → NaN, +inf → +inf, -inf → 0.0.
     """
     n = regs.read(inst.rd)
+    _check_vector_length(n, 4)
     addr_src = regs.read(inst.rs1)
     addr_dst = regs.read(inst.rs2)
     if _USE_ACCEL:
@@ -495,6 +504,7 @@ def _exec_fvdiv(
     rs1 = source address, rs2 = dest address. Accumulator is NOT modified.
     """
     n = regs.read(inst.rd)
+    _check_vector_length(n, 4)
     addr_src = regs.read(inst.rs1)
     addr_dst = regs.read(inst.rs2)
     divisor_bits = _f64_to_f32_bits(npu.facc)
@@ -531,6 +541,7 @@ def _exec_fvsub_scalar(
     rs1 = source address, rs2 = dest address. Accumulator is NOT modified.
     """
     n = regs.read(inst.rd)
+    _check_vector_length(n, 4)
     addr_src = regs.read(inst.rs1)
     addr_dst = regs.read(inst.rs2)
     scalar_bits = _f64_to_f32_bits(npu.facc)

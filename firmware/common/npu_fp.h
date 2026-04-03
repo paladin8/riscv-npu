@@ -13,9 +13,9 @@ static inline void NPU_FMACC(float a, float b) {
 }
 
 /* FVMAC: facc += dot(mem_f32[a..+n], mem_f32[b..+n]) — FP vector dot product */
-static inline void NPU_FVMAC(void *addr_a, void *addr_b, int len) {
-    register void *_a asm("a0") = addr_a;
-    register void *_b asm("a1") = addr_b;
+static inline void NPU_FVMAC(const void *addr_a, const void *addr_b, int len) {
+    register const void *_a asm("a0") = addr_a;
+    register const void *_b asm("a1") = addr_b;
     register int _n asm("a2") = len;
     asm volatile(".insn r 0x2B, 0x0, 0x01, a2, a0, a1"
                  :: "r"(_a), "r"(_b), "r"(_n) : "memory");

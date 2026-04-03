@@ -5,7 +5,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from ..cpu.decode import Instruction, to_signed
-from .engine import NpuState, acc_add, acc_reset, GELU_TABLE, exp_q16_16, rsqrt_q16_16
+from .engine import (
+    NpuState, acc_add, acc_reset, GELU_TABLE, exp_q16_16, rsqrt_q16_16,
+    _check_vector_length,
+)
 
 try:
     from ._accel import vmac_int8, vmul_int8, vreduce_int32, vmax_int32, vexp_int32
@@ -112,6 +115,7 @@ def _exec_vmac(
     the product to the 64-bit accumulator. Does NOT reset the accumulator.
     """
     n = regs.read(inst.rd)
+    _check_vector_length(n, 1)
     addr_a = regs.read(inst.rs1)
     addr_b = regs.read(inst.rs2)
     if _USE_ACCEL:
@@ -255,6 +259,7 @@ def _exec_vexp(
     address. Elements are int32 (4 bytes each) in Q16.16 fixed-point format.
     """
     n = regs.read(inst.rd)
+    _check_vector_length(n, 4)
     addr_src = regs.read(inst.rs1)
     addr_dst = regs.read(inst.rs2)
     if _USE_ACCEL:
@@ -302,6 +307,7 @@ def _exec_vmul(
     The accumulator is NOT modified.
     """
     n = regs.read(inst.rd)
+    _check_vector_length(n, 1)
     addr_src = regs.read(inst.rs1)
     addr_dst = regs.read(inst.rs2)
     # Scale factor from accumulator low word, interpreted as signed
@@ -335,6 +341,7 @@ def _exec_vreduce(
     If count is 0, rd is set to 0.
     """
     n = regs.read(inst.rs2)
+    _check_vector_length(n, 4)
     addr_src = regs.read(inst.rs1)
     if _USE_ACCEL:
         data, base = mem.get_device_data(addr_src)
@@ -359,6 +366,7 @@ def _exec_vmax(
     If count is 0, rd is set to 0x80000000 (minimum int32).
     """
     n = regs.read(inst.rs2)
+    _check_vector_length(n, 4)
     addr_src = regs.read(inst.rs1)
     if n == 0:
         regs.write(inst.rd, 0x80000000)

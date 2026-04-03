@@ -5,6 +5,30 @@ import struct
 from dataclasses import dataclass, field
 
 
+# Maximum bytes a single vector instruction can process.
+# 256 bytes = 256 int8 elements or 64 int32/float32 elements.
+NPU_MAX_VECTOR_BYTES: int = 256
+
+
+class NpuVectorLengthFault(Exception):
+    """Raised when a vector instruction exceeds NPU_MAX_VECTOR_BYTES."""
+
+
+def _check_vector_length(n: int, elem_bytes: int) -> None:
+    """Raise NpuVectorLengthFault if n * elem_bytes > NPU_MAX_VECTOR_BYTES.
+
+    Args:
+        n: Number of elements.
+        elem_bytes: Size of each element in bytes (1, 4, etc.).
+    """
+    total = n * elem_bytes
+    if total > NPU_MAX_VECTOR_BYTES:
+        raise NpuVectorLengthFault(
+            f"vector length {n} * {elem_bytes}B = {total}B "
+            f"exceeds NPU limit of {NPU_MAX_VECTOR_BYTES}B"
+        )
+
+
 def _make_vregs() -> list[list[int]]:
     """Create 4 vector registers, each containing 4 zeroed int8 values."""
     return [[0, 0, 0, 0] for _ in range(4)]

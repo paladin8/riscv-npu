@@ -6,9 +6,12 @@ FVADD, FVSUB, FVRELU, FVGELU, FVDIV, FVSUB_SCALAR.
 import math
 import struct
 
+import pytest
+
 from riscv_npu.cpu.cpu import CPU
 from riscv_npu.memory.bus import MemoryBus
 from riscv_npu.memory.ram import RAM
+from riscv_npu.npu.engine import NPU_MAX_VECTOR_BYTES, NpuVectorLengthFault
 
 BASE = 0x80000000
 RAM_SIZE = 1024 * 1024
@@ -546,3 +549,74 @@ class TestFVSUB_SCALAR:
         results = _read_f32_array(cpu, addr, 2)
         assert abs(results[0] - 5.0) < 1e-5
         assert abs(results[1] - 15.0) < 1e-5
+
+
+# ==================== Vector length limit tests ====================
+
+
+class TestArraxVectorLengthLimit:
+    """Phase 11 FP vector ops fault when exceeding NPU_MAX_VECTOR_BYTES."""
+
+    def test_fvadd_over_limit_faults(self) -> None:
+        """FVADD with 65 f32 elements (260 bytes) faults."""
+        cpu = _make_cpu()
+        cpu.registers.write(10, NPU_MAX_VECTOR_BYTES // 4 + 1)
+        cpu.registers.write(11, BASE + 0x1000)
+        cpu.registers.write(12, BASE + 0x2000)
+        with pytest.raises(NpuVectorLengthFault):
+            _exec(cpu, _fp_npu_r(7, 12, 11, 0, 10))
+
+    def test_fvsub_over_limit_faults(self) -> None:
+        """FVSUB with 65 f32 elements faults."""
+        cpu = _make_cpu()
+        cpu.registers.write(10, NPU_MAX_VECTOR_BYTES // 4 + 1)
+        cpu.registers.write(11, BASE + 0x1000)
+        cpu.registers.write(12, BASE + 0x2000)
+        with pytest.raises(NpuVectorLengthFault):
+            _exec(cpu, _fp_npu_r(8, 12, 11, 0, 10))
+
+    def test_fvrelu_over_limit_faults(self) -> None:
+        """FVRELU with 65 f32 elements faults."""
+        cpu = _make_cpu()
+        cpu.registers.write(10, NPU_MAX_VECTOR_BYTES // 4 + 1)
+        cpu.registers.write(11, BASE + 0x1000)
+        cpu.registers.write(12, BASE + 0x2000)
+        with pytest.raises(NpuVectorLengthFault):
+            _exec(cpu, _fp_npu_r(9, 12, 11, 0, 10))
+
+    def test_fvgelu_over_limit_faults(self) -> None:
+        """FVGELU with 65 f32 elements faults."""
+        cpu = _make_cpu()
+        cpu.registers.write(10, NPU_MAX_VECTOR_BYTES // 4 + 1)
+        cpu.registers.write(11, BASE + 0x1000)
+        cpu.registers.write(12, BASE + 0x2000)
+        with pytest.raises(NpuVectorLengthFault):
+            _exec(cpu, _fp_npu_r(10, 12, 11, 0, 10))
+
+    def test_fvdiv_over_limit_faults(self) -> None:
+        """FVDIV with 65 f32 elements faults."""
+        cpu = _make_cpu()
+        cpu.npu_state.facc = 1.0
+        cpu.registers.write(10, NPU_MAX_VECTOR_BYTES // 4 + 1)
+        cpu.registers.write(11, BASE + 0x1000)
+        cpu.registers.write(12, BASE + 0x2000)
+        with pytest.raises(NpuVectorLengthFault):
+            _exec(cpu, _fp_npu_r(11, 12, 11, 0, 10))
+
+    def test_fvsub_scalar_over_limit_faults(self) -> None:
+        """FVSUB_SCALAR with 65 f32 elements faults."""
+        cpu = _make_cpu()
+        cpu.npu_state.facc = 1.0
+        cpu.registers.write(10, NPU_MAX_VECTOR_BYTES // 4 + 1)
+        cpu.registers.write(11, BASE + 0x1000)
+        cpu.registers.write(12, BASE + 0x2000)
+        with pytest.raises(NpuVectorLengthFault):
+            _exec(cpu, _fp_npu_r(12, 12, 11, 0, 10))
+
+    def test_fvadd_at_limit_ok(self) -> None:
+        """FVADD with exactly 64 f32 elements (256 bytes) succeeds."""
+        cpu = _make_cpu()
+        cpu.registers.write(10, NPU_MAX_VECTOR_BYTES // 4)
+        cpu.registers.write(11, BASE + 0x1000)
+        cpu.registers.write(12, BASE + 0x2000)
+        _exec(cpu, _fp_npu_r(7, 12, 11, 0, 10))

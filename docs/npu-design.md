@@ -51,6 +51,18 @@ Vector registers:     vreg[0..3], each 4 × int8 (-128..127)
 
 NPU state is initialized to zero and persists across instructions. It is *not* saved/restored by ECALL or MRET (there is no NPU context-switch support).
 
+### Vector Length Limit
+
+All vector instructions enforce a maximum transfer size of **256 bytes** per operation, modelling a realistic embedded NPU SRAM lane width. Exceeding this limit raises a hardware fault (`NpuVectorLengthFault`).
+
+| Element type | Bytes each | Max elements per call |
+|--------------|------------|-----------------------|
+| int8         | 1          | 256                   |
+| int32        | 4          | 64                    |
+| float32      | 4          | 64                    |
+
+For operations that exceed 256 bytes (e.g. a 784-element MNIST dot product), firmware must split the work into multiple calls. This is safe because the accumulator persists across calls — chunked VMAC/FVMAC produces the same result as a single large call. This is analogous to the RISC-V V extension's `vsetvl` pattern where firmware queries the hardware vector length and loops accordingly.
+
 ## Integer Instruction Reference (opcode 0x0B)
 
 All integer NPU instructions use opcode `0x0B`. The `funct3` field selects the operation.
@@ -590,20 +602,20 @@ int32_t c = NPU_CLAMP(wide_val);
 
 Available functions (all `static inline`):
 
-| Intrinsic                    | Signature                                  | Instruction  |
-|------------------------------|--------------------------------------------|--------------|
-| `NPU_MACC(a, b)`             | `void NPU_MACC(int32_t, int32_t)`          | NPU.MACC     |
-| `NPU_VMAC(addr_a, addr_b, n)`| `void NPU_VMAC(void *, void *, int)`       | NPU.VMAC     |
-| `NPU_RSTACC()`               | `int32_t NPU_RSTACC(void)`                 | NPU.RSTACC   |
-| `NPU_RELU(src)`              | `int32_t NPU_RELU(int32_t)`                | NPU.RELU     |
-| `NPU_GELU(src)`              | `int32_t NPU_GELU(int32_t)`                | NPU.GELU     |
-| `NPU_QMUL(a, b)`             | `int32_t NPU_QMUL(int32_t, int32_t)`       | NPU.QMUL     |
-| `NPU_CLAMP(src)`             | `int32_t NPU_CLAMP(int32_t)`               | NPU.CLAMP    |
-| `NPU_VEXP(src, dst, n)`      | `void NPU_VEXP(void *, void *, int)`       | NPU.VEXP     |
-| `NPU_VRSQRT(addr)`           | `int32_t NPU_VRSQRT(void *)`               | NPU.VRSQRT   |
-| `NPU_VMUL(src, dst, n)`      | `void NPU_VMUL(void *, void *, int)`       | NPU.VMUL     |
-| `NPU_VREDUCE(addr, n)`       | `int32_t NPU_VREDUCE(void *, int)`          | NPU.VREDUCE  |
-| `NPU_VMAX(addr, n)`          | `int32_t NPU_VMAX(void *, int)`             | NPU.VMAX     |
+| Intrinsic                          | Signature                                    | Instruction |
+|------------------------------------|----------------------------------------------|-------------|
+| `NPU_MACC(a, b)`                  | `void NPU_MACC(int32_t, int32_t)`             | NPU.MACC    |
+| `NPU_VMAC(addr_a, addr_b, n)`     | `void NPU_VMAC(void *, void *, int)`          | NPU.VMAC    |
+| `NPU_RSTACC()`                    | `int32_t NPU_RSTACC(void)`                    | NPU.RSTACC  |
+| `NPU_RELU(src)`                   | `int32_t NPU_RELU(int32_t)`                   | NPU.RELU    |
+| `NPU_GELU(src)`                   | `int32_t NPU_GELU(int32_t)`                   | NPU.GELU    |
+| `NPU_QMUL(a, b)`                  | `int32_t NPU_QMUL(int32_t, int32_t)`          | NPU.QMUL    |
+| `NPU_CLAMP(src)`                  | `int32_t NPU_CLAMP(int32_t)`                  | NPU.CLAMP   |
+| `NPU_VEXP(src, dst, n)`           | `void NPU_VEXP(void *, void *, int)`          | NPU.VEXP    |
+| `NPU_VRSQRT(addr)`                | `int32_t NPU_VRSQRT(void *)`                  | NPU.VRSQRT  |
+| `NPU_VMUL(src, dst, n)`           | `void NPU_VMUL(void *, void *, int)`          | NPU.VMUL    |
+| `NPU_VREDUCE(addr, n)`            | `int32_t NPU_VREDUCE(void *, int)`            | NPU.VREDUCE |
+| `NPU_VMAX(addr, n)`               | `int32_t NPU_VMAX(void *, int)`               | NPU.VMAX    |
 
 LDVEC/STVEC do not have C intrinsics yet.
 
@@ -611,24 +623,24 @@ LDVEC/STVEC do not have C intrinsics yet.
 
 FP NPU intrinsics are `static inline` functions using the `.insn r` directive with opcode `0x2B`. Scalar results go to float registers.
 
-| Intrinsic                           | Signature                                  | Instruction      |
-|-------------------------------------|------------------------------------------  |------------------|
-| `NPU_FMACC(a, b)`                   | `void NPU_FMACC(float, float)`             | NPU.FMACC        |
-| `NPU_FVMAC(addr_a, addr_b, len)`    | `void NPU_FVMAC(void *, void *, int)`      | NPU.FVMAC        |
-| `NPU_FRSTACC()`                     | `float NPU_FRSTACC(void)`                  | NPU.FRSTACC      |
-| `NPU_FRELU(src)`                    | `float NPU_FRELU(float)`                   | NPU.FRELU        |
-| `NPU_FGELU(src)`                    | `float NPU_FGELU(float)`                   | NPU.FGELU        |
-| `NPU_FVEXP(src, dst, n)`            | `void NPU_FVEXP(void *, void *, int)`      | NPU.FVEXP        |
-| `NPU_FVRSQRT(addr)`                 | `float NPU_FVRSQRT(void *)`                | NPU.FVRSQRT      |
-| `NPU_FVMUL(src, dst, n)`            | `void NPU_FVMUL(void *, void *, int)`      | NPU.FVMUL        |
-| `NPU_FVREDUCE(addr, n)`             | `float NPU_FVREDUCE(void *, int)`           | NPU.FVREDUCE     |
-| `NPU_FVMAX(addr, n)`                | `float NPU_FVMAX(void *, int)`              | NPU.FVMAX        |
-| `NPU_FVADD(src1, src2, n)`          | `void NPU_FVADD(void *, void *, int)`      | NPU.FVADD        |
-| `NPU_FVSUB(src1, src2, n)`          | `void NPU_FVSUB(void *, void *, int)`      | NPU.FVSUB        |
-| `NPU_FVRELU(src, dst, n)`           | `void NPU_FVRELU(void *, void *, int)`     | NPU.FVRELU       |
-| `NPU_FVGELU(src, dst, n)`           | `void NPU_FVGELU(void *, void *, int)`     | NPU.FVGELU       |
-| `NPU_FVDIV(src, dst, n)`            | `void NPU_FVDIV(void *, void *, int)`      | NPU.FVDIV        |
-| `NPU_FVSUB_SCALAR(src, dst, n)`     | `void NPU_FVSUB_SCALAR(void *, void *, int)` | NPU.FVSUB_SCALAR |
+| Intrinsic                          | Signature                                           | Instruction      |
+|------------------------------------|-----------------------------------------------------|------------------|
+| `NPU_FMACC(a, b)`                 | `void NPU_FMACC(float, float)`                       | NPU.FMACC        |
+| `NPU_FVMAC(addr_a, addr_b, len)`  | `void NPU_FVMAC(void *, void *, int)`                | NPU.FVMAC        |
+| `NPU_FRSTACC()`                   | `float NPU_FRSTACC(void)`                            | NPU.FRSTACC      |
+| `NPU_FRELU(src)`                  | `float NPU_FRELU(float)`                             | NPU.FRELU        |
+| `NPU_FGELU(src)`                  | `float NPU_FGELU(float)`                             | NPU.FGELU        |
+| `NPU_FVEXP(src, dst, n)`          | `void NPU_FVEXP(void *, void *, int)`                | NPU.FVEXP        |
+| `NPU_FVRSQRT(addr)`               | `float NPU_FVRSQRT(void *)`                          | NPU.FVRSQRT      |
+| `NPU_FVMUL(src, dst, n)`          | `void NPU_FVMUL(void *, void *, int)`                | NPU.FVMUL        |
+| `NPU_FVREDUCE(addr, n)`           | `float NPU_FVREDUCE(void *, int)`                    | NPU.FVREDUCE     |
+| `NPU_FVMAX(addr, n)`              | `float NPU_FVMAX(void *, int)`                       | NPU.FVMAX        |
+| `NPU_FVADD(src1, src2, n)`        | `void NPU_FVADD(void *, void *, int)`                | NPU.FVADD        |
+| `NPU_FVSUB(src1, src2, n)`        | `void NPU_FVSUB(void *, void *, int)`                | NPU.FVSUB        |
+| `NPU_FVRELU(src, dst, n)`         | `void NPU_FVRELU(void *, void *, int)`               | NPU.FVRELU       |
+| `NPU_FVGELU(src, dst, n)`         | `void NPU_FVGELU(void *, void *, int)`               | NPU.FVGELU       |
+| `NPU_FVDIV(src, dst, n)`          | `void NPU_FVDIV(void *, void *, int)`                | NPU.FVDIV        |
+| `NPU_FVSUB_SCALAR(src, dst, n)`   | `void NPU_FVSUB_SCALAR(void *, void *, int)`         | NPU.FVSUB_SCALAR |
 
 ## Typical Inference Pipelines
 

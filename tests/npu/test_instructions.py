@@ -2,11 +2,16 @@
 
 import math
 
+import pytest
+
 from riscv_npu.cpu.cpu import CPU
 from riscv_npu.cpu.decode import to_signed
 from riscv_npu.memory.bus import MemoryBus
 from riscv_npu.memory.ram import RAM
-from riscv_npu.npu.engine import GELU_TABLE, acc_get64, acc_set64
+from riscv_npu.npu.engine import (
+    GELU_TABLE, NPU_MAX_VECTOR_BYTES, NpuVectorLengthFault,
+    acc_get64, acc_set64,
+)
 
 BASE = 0x80000000
 RAM_SIZE = 1024 * 1024
@@ -163,9 +168,10 @@ class TestVMAC:
         assert acc_get64(cpu.npu_state) == -14
 
     def test_large_dot_product(self) -> None:
-        """VMAC with 784 elements (MNIST-scale), verify against Python reference."""
+        """VMAC with 784 elements (MNIST-scale), split into 256-element chunks."""
         cpu = _make_cpu()
         n = 784
+        chunk = NPU_MAX_VECTOR_BYTES  # 256 int8 elements per call
         data_base = BASE + 0x1000
         addr_a = data_base
         addr_b = data_base + 0x1000
@@ -181,10 +187,15 @@ class TestVMAC:
             b_signed = b_byte - 256 if b_byte >= 128 else b_byte
             expected += a_signed * b_signed
 
-        cpu.registers.write(10, addr_a)
-        cpu.registers.write(11, addr_b)
-        cpu.registers.write(12, n)
-        _exec(cpu, _npu_r(1, 11, 10, 0, 12))
+        # Process in chunks (accumulator persists across calls)
+        offset = 0
+        while offset < n:
+            count = min(chunk, n - offset)
+            cpu.registers.write(10, addr_a + offset)
+            cpu.registers.write(11, addr_b + offset)
+            cpu.registers.write(12, count)
+            _exec(cpu, _npu_r(1, 11, 10, 0, 12))
+            offset += count
         assert acc_get64(cpu.npu_state) == expected
 
     def test_zero_length(self) -> None:
@@ -1050,3 +1061,88 @@ class TestVMAX:
         cpu.registers.write(11, 4)
         _exec(cpu, _npu_r(6, 11, 10, 0, 3))
         assert cpu.registers.read(3) == 100
+
+
+# ==================== Vector length limit tests ====================
+
+
+class TestVectorLengthLimitInt:
+    """NPU vector ops fault when element count exceeds NPU_MAX_VECTOR_BYTES."""
+
+    def test_vmac_at_limit(self) -> None:
+        """VMAC with exactly 256 int8 elements (256 bytes) succeeds."""
+        cpu = _make_cpu()
+        n = NPU_MAX_VECTOR_BYTES  # 256 int8 = 256 bytes
+        addr_a = BASE + 0x1000
+        addr_b = BASE + 0x2000
+        # Write zero bytes — we only care about the length check
+        cpu.registers.write(10, n)       # rd = count
+        cpu.registers.write(11, addr_a)  # rs1 = addr_a
+        cpu.registers.write(12, addr_b)  # rs2 = addr_b
+        # funct7=1 (VMAC), funct3=0
+        _exec(cpu, _npu_r(1, 12, 11, 0, 10))
+        # Should not raise — 256 * 1 = 256 bytes ≤ 256
+
+    def test_vmac_over_limit_faults(self) -> None:
+        """VMAC with 257 int8 elements (257 bytes) raises NpuVectorLengthFault."""
+        cpu = _make_cpu()
+        n = NPU_MAX_VECTOR_BYTES + 1  # 257 int8 = 257 bytes
+        addr_a = BASE + 0x1000
+        addr_b = BASE + 0x2000
+        cpu.registers.write(10, n)
+        cpu.registers.write(11, addr_a)
+        cpu.registers.write(12, addr_b)
+        with pytest.raises(NpuVectorLengthFault):
+            _exec(cpu, _npu_r(1, 12, 11, 0, 10))
+
+    def test_vmul_over_limit_faults(self) -> None:
+        """VMUL with 257 int8 elements faults."""
+        cpu = _make_cpu()
+        cpu.registers.write(10, NPU_MAX_VECTOR_BYTES + 1)
+        cpu.registers.write(11, BASE + 0x1000)
+        cpu.registers.write(12, BASE + 0x2000)
+        with pytest.raises(NpuVectorLengthFault):
+            _exec(cpu, _npu_r(4, 12, 11, 0, 10))
+
+    def test_vexp_at_limit(self) -> None:
+        """VEXP with 64 int32 elements (256 bytes) succeeds."""
+        cpu = _make_cpu()
+        n = NPU_MAX_VECTOR_BYTES // 4  # 64 int32 = 256 bytes
+        cpu.registers.write(10, n)
+        cpu.registers.write(11, BASE + 0x1000)
+        cpu.registers.write(12, BASE + 0x2000)
+        _exec(cpu, _npu_r(2, 12, 11, 0, 10))
+
+    def test_vexp_over_limit_faults(self) -> None:
+        """VEXP with 65 int32 elements (260 bytes) faults."""
+        cpu = _make_cpu()
+        n = NPU_MAX_VECTOR_BYTES // 4 + 1  # 65 int32 = 260 bytes
+        cpu.registers.write(10, n)
+        cpu.registers.write(11, BASE + 0x1000)
+        cpu.registers.write(12, BASE + 0x2000)
+        with pytest.raises(NpuVectorLengthFault):
+            _exec(cpu, _npu_r(2, 12, 11, 0, 10))
+
+    def test_vreduce_over_limit_faults(self) -> None:
+        """VREDUCE with 65 int32 elements (260 bytes) faults."""
+        cpu = _make_cpu()
+        cpu.registers.write(11, BASE + 0x1000)
+        cpu.registers.write(12, NPU_MAX_VECTOR_BYTES // 4 + 1)  # rs2 = count
+        with pytest.raises(NpuVectorLengthFault):
+            _exec(cpu, _npu_r(5, 12, 11, 0, 3))
+
+    def test_vmax_over_limit_faults(self) -> None:
+        """VMAX with 65 int32 elements (260 bytes) faults."""
+        cpu = _make_cpu()
+        cpu.registers.write(11, BASE + 0x1000)
+        cpu.registers.write(12, NPU_MAX_VECTOR_BYTES // 4 + 1)  # rs2 = count
+        with pytest.raises(NpuVectorLengthFault):
+            _exec(cpu, _npu_r(6, 12, 11, 0, 3))
+
+    def test_zero_elements_ok(self) -> None:
+        """VMAC with 0 elements does not fault."""
+        cpu = _make_cpu()
+        cpu.registers.write(10, 0)
+        cpu.registers.write(11, BASE + 0x1000)
+        cpu.registers.write(12, BASE + 0x2000)
+        _exec(cpu, _npu_r(1, 12, 11, 0, 10))
