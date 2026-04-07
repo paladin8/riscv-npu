@@ -376,8 +376,8 @@ def _disasm_fp_npu_f3_0(inst: Instruction) -> str:
         return f"{name} {_reg(inst.rd)}, {_reg(inst.rs1)}, {_reg(inst.rs2)}"
     elif f7 == 2:  # FVEXP: x[rd]=count, x[rs1]=src, x[rs2]=dst
         return f"{name} {_reg(inst.rd)}, {_reg(inst.rs1)}, {_reg(inst.rs2)}"
-    elif f7 == 3:  # FRSQRT: f[rd]=result, x[rs1]=addr
-        return f"{name} {_freg(inst.rd)}, {_reg(inst.rs1)}"
+    elif f7 == 3:  # FRSQRT: f[rd]=result, f[rs1]=input
+        return f"{name} {_freg(inst.rd)}, {_freg(inst.rs1)}"
     elif f7 == 4:  # FVMUL: x[rd]=count, x[rs1]=src, x[rs2]=dst
         return f"{name} {_reg(inst.rd)}, {_reg(inst.rs1)}, {_reg(inst.rs2)}"
     elif f7 == 5:  # FVREDUCE: f[rd]=result, x[rs1]=addr, x[rs2]=count

@@ -104,7 +104,7 @@ def execute_fp_npu(inst: Instruction, cpu: CPU) -> int:
         elif f7 == 2:
             _exec_fvexp(inst, regs, mem)
         elif f7 == 3:
-            _exec_frsqrt(inst, regs, fregs, mem)
+            _exec_frsqrt(inst, fregs)
         elif f7 == 4:
             _exec_fvmul(inst, regs, mem, npu)
         elif f7 == 5:
@@ -258,18 +258,14 @@ def _exec_fvexp(
 
 def _exec_frsqrt(
     inst: Instruction,
-    regs: RegisterFile,
     fregs: FRegisterFile,
-    mem: MemoryBus,
 ) -> None:
-    """NPU.FRSQRT: f[rd] = 1/sqrt(mem_f32[rs1]).
+    """NPU.FRSQRT: f[rd] = 1/sqrt(f[rs1]).
 
-    Reads one float32 from memory at address rs1, computes 1/sqrt(x),
-    and writes the float32 result to f[rd].
+    Reads f[rs1], computes 1/sqrt(x), and writes the result to f[rd].
     Negative → NaN. Zero → +inf.
     """
-    addr = regs.read(inst.rs1)
-    val = _read_mem_f32(mem, addr)
+    val = fregs.read_float(inst.rs1)
     if math.isnan(val) or val < 0.0:
         result = float('nan')
     elif val == 0.0:

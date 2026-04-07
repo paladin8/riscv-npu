@@ -311,44 +311,36 @@ class TestFVEXP:
 
 
 class TestFRSQRT:
-    """NPU.FRSQRT: f[rd] = 1/sqrt(mem_f32[rs1])."""
+    """NPU.FRSQRT: f[rd] = 1/sqrt(f[rs1])."""
 
     def test_basic(self) -> None:
         """FRSQRT: 1/sqrt(4.0) = 0.5."""
         cpu = _make_cpu()
-        addr = BASE + 0x1000
-        _write_f32_array(cpu, addr, [4.0])
-        cpu.registers.write(11, addr)
-        # FRSQRT: funct7=3, rs2=0, rs1=x11, funct3=0, rd=f5
-        _exec(cpu, _fp_npu_r(3, 0, 11, 0, 5))
+        cpu.fpu_state.fregs.write_float(6, 4.0)
+        # FRSQRT: funct7=3, rs2=0, rs1=f6, funct3=0, rd=f5
+        _exec(cpu, _fp_npu_r(3, 0, 6, 0, 5))
         assert abs(cpu.fpu_state.fregs.read_float(5) - 0.5) < 1e-5
 
     def test_one(self) -> None:
         """FRSQRT: 1/sqrt(1.0) = 1.0."""
         cpu = _make_cpu()
-        addr = BASE + 0x1000
-        _write_f32_array(cpu, addr, [1.0])
-        cpu.registers.write(11, addr)
-        _exec(cpu, _fp_npu_r(3, 0, 11, 0, 5))
+        cpu.fpu_state.fregs.write_float(6, 1.0)
+        _exec(cpu, _fp_npu_r(3, 0, 6, 0, 5))
         assert abs(cpu.fpu_state.fregs.read_float(5) - 1.0) < 1e-5
 
     def test_zero_gives_inf(self) -> None:
         """FRSQRT: 1/sqrt(0) = +inf."""
         cpu = _make_cpu()
-        addr = BASE + 0x1000
-        _write_f32_array(cpu, addr, [0.0])
-        cpu.registers.write(11, addr)
-        _exec(cpu, _fp_npu_r(3, 0, 11, 0, 5))
+        cpu.fpu_state.fregs.write_float(6, 0.0)
+        _exec(cpu, _fp_npu_r(3, 0, 6, 0, 5))
         result = cpu.fpu_state.fregs.read_float(5)
         assert math.isinf(result) and result > 0
 
     def test_negative_gives_nan(self) -> None:
         """FRSQRT: 1/sqrt(negative) = NaN."""
         cpu = _make_cpu()
-        addr = BASE + 0x1000
-        _write_f32_array(cpu, addr, [-4.0])
-        cpu.registers.write(11, addr)
-        _exec(cpu, _fp_npu_r(3, 0, 11, 0, 5))
+        cpu.fpu_state.fregs.write_float(6, -4.0)
+        _exec(cpu, _fp_npu_r(3, 0, 6, 0, 5))
         assert math.isnan(cpu.fpu_state.fregs.read_float(5))
 
 

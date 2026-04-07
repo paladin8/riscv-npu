@@ -85,7 +85,7 @@ static void rmsnorm(
     float mean_sq = sum_sq / (float)dim + 1e-5f;
 
     /* 1/sqrt(mean_sq) */
-    float scale = NPU_FRSQRT(&mean_sq);
+    float scale = NPU_FRSQRT(mean_sq);
 
     /* output[i] = input[i] * gamma[i] * scale */
     for (int i = 0; i < dim; i++) {
@@ -155,7 +155,7 @@ static void attention(
 
     int n_tokens = pos + 1;
     float head_dim_f = (float)HEAD_DIM;
-    float attn_scale = NPU_FRSQRT(&head_dim_f);
+    float attn_scale = NPU_FRSQRT(head_dim_f);
 
     /* Per-head attention */
     for (int h = 0; h < N_HEADS; h++) {

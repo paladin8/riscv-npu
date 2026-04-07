@@ -25,7 +25,7 @@ All instructions use opcode 0x2B (custom-1), R-type encoding. Already implemente
 | 0      | 0      | FMACC      | facc += f[rs1] * f[rs2]                                     |
 | 0      | 1      | FVMAC      | facc += dot(mem_f32[rs1..+n], mem_f32[rs2..+n])             |
 | 0      | 2      | FVEXP      | dst_f32[i] = exp(src_f32[i]) for i in 0..n-1                |
-| 0      | 3      | FRSQRT     | f[rd] = 1/sqrt(mem_f32[rs1])                                |
+| 0      | 3      | FRSQRT     | f[rd] = 1/sqrt(f[rs1])                                      |
 | 0      | 4      | FVMUL      | dst_f32[i] = src_f32[i] * (float32)facc for i in 0..n-1    |
 | 0      | 5      | FVREDUCE   | f[rd] = sum(mem_f32[rs1..+n])                               |
 | 0      | 6      | FVMAX      | f[rd] = max(mem_f32[rs1..+n])                               |
@@ -202,7 +202,7 @@ static void rmsnorm(
     float mean_sq = sum_sq / (float)dim + 1e-5f;
 
     /* 1/sqrt(mean_sq) */
-    float scale = NPU_FRSQRT(&mean_sq);
+    float scale = NPU_FRSQRT(mean_sq);
 
     /* output[i] = input[i] * gamma[i] * scale */
     for (int i = 0; i < dim; i++) {

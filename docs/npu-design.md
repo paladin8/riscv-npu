@@ -404,9 +404,9 @@ funct3 = 000, funct7 = 0000011    Format: R-type
 Syntax: NPU.FRSQRT rd, rs1
 ```
 
-`f[rd] = 1.0 / sqrt(mem_f32[regs[rs1]])`
+`f[rd] = 1.0 / sqrt(f[rs1])`
 
-Reads one float32 from memory at address `rs1`, computes 1/sqrt(x), and writes the float32 result to f[rd]. Negative input produces NaN. Zero input produces +inf.
+Reads f[rs1], computes 1/sqrt(x), and writes the float32 result to f[rd]. Negative input produces NaN. Zero input produces +inf.
 
 **Use case**: RMSNorm: compute the scaling factor `1/sqrt(mean(x²) + eps)`.
 
@@ -631,7 +631,7 @@ FP NPU intrinsics are `static inline` functions using the `.insn r` directive wi
 | `NPU_FRELU(src)`                  | `float NPU_FRELU(float)`                             | NPU.FRELU        |
 | `NPU_FGELU(src)`                  | `float NPU_FGELU(float)`                             | NPU.FGELU        |
 | `NPU_FVEXP(src, dst, n)`          | `void NPU_FVEXP(void *, void *, int)`                | NPU.FVEXP        |
-| `NPU_FRSQRT(addr)`                | `float NPU_FRSQRT(void *)`                           | NPU.FRSQRT       |
+| `NPU_FRSQRT(src)`                 | `float NPU_FRSQRT(float)`                            | NPU.FRSQRT       |
 | `NPU_FVMUL(src, dst, n)`          | `void NPU_FVMUL(void *, void *, int)`                | NPU.FVMUL        |
 | `NPU_FVREDUCE(addr, n)`           | `float NPU_FVREDUCE(void *, int)`                    | NPU.FVREDUCE     |
 | `NPU_FVMAX(addr, n)`              | `float NPU_FVMAX(void *, int)`                       | NPU.FVMAX        |
@@ -690,7 +690,7 @@ NPU_FVMUL(exp_buf, output, N)       // divide by sum (multiply by 1/sum)
 NPU_FVMAC(x, x, N)              // facc = sum(x[i]^2)
 sum_sq = NPU_FRSTACC()           // read sum, reset accumulator
 mean_sq = sum_sq / N + eps       // compute mean + epsilon
-scale = NPU_FRSQRT(&mean_sq)   // 1/sqrt(mean_sq)
+scale = NPU_FRSQRT(mean_sq)    // 1/sqrt(mean_sq)
 // output[i] = input[i] * gamma[i] * scale
 for i in 0..N-1:
     output[i] = input[i] * gamma[i] * scale

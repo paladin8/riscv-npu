@@ -51,10 +51,10 @@ static inline void NPU_FVEXP(void *src, void *dst, int n) {
                  :: "r"(_s), "r"(_d), "r"(_n) : "memory");
 }
 
-/* FRSQRT: returns 1/sqrt(mem_f32[addr]) as float */
-static inline float NPU_FRSQRT(void *addr) {
+/* FRSQRT: returns 1/sqrt(src) as float */
+static inline float NPU_FRSQRT(float src) {
     float result;
-    asm volatile(".insn r 0x2B, 0x0, 0x03, %0, %1, x0" : "=f"(result) : "r"(addr) : "memory");
+    asm volatile(".insn r 0x2B, 0x0, 0x03, %0, %1, f0" : "=f"(result) : "f"(src));
     return result;
 }
 
