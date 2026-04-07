@@ -285,7 +285,7 @@ Designed for float32 inference with a float64 accumulator. Key instructions:
 | NPU.FRELU        | FP scalar ReLU: f[rd] = max(f[rs1], 0.0)                   |
 | NPU.FGELU        | FP scalar GELU at full precision                           |
 | NPU.FVEXP        | Vector exp over float32 array                              |
-| NPU.FVRSQRT      | Scalar 1/sqrt from memory to float register                |
+| NPU.FRSQRT       | Scalar 1/sqrt from memory to float register                |
 | NPU.FVMUL        | Vector scale by facc value                                 |
 | NPU.FVREDUCE     | Vector sum reduction to float register                     |
 | NPU.FVMAX        | Vector max reduction to float register                     |

@@ -75,7 +75,7 @@ def execute_fp_npu(inst: Instruction, cpu: CPU) -> int:
     """Execute an FP NPU instruction (opcode 0x2B).
 
     Dispatches by funct3:
-        0: sub-dispatch by funct7 (FMACC, FVMAC, FVEXP, FVRSQRT, FVMUL, FVREDUCE,
+        0: sub-dispatch by funct7 (FMACC, FVMAC, FVEXP, FRSQRT, FVMUL, FVREDUCE,
            FVMAX, FVADD, FVSUB, FVRELU, FVGELU, FVDIV, FVSUB_SCALAR)
         1: FRELU  - FP rectified linear unit
         4: FGELU  - FP GELU activation
@@ -104,7 +104,7 @@ def execute_fp_npu(inst: Instruction, cpu: CPU) -> int:
         elif f7 == 2:
             _exec_fvexp(inst, regs, mem)
         elif f7 == 3:
-            _exec_fvrsqrt(inst, regs, fregs, mem)
+            _exec_frsqrt(inst, regs, fregs, mem)
         elif f7 == 4:
             _exec_fvmul(inst, regs, mem, npu)
         elif f7 == 5:
@@ -256,13 +256,13 @@ def _exec_fvexp(
             _write_mem_f32(mem, dst_addr, result)
 
 
-def _exec_fvrsqrt(
+def _exec_frsqrt(
     inst: Instruction,
     regs: RegisterFile,
     fregs: FRegisterFile,
     mem: MemoryBus,
 ) -> None:
-    """NPU.FVRSQRT: f[rd] = 1/sqrt(mem_f32[rs1]).
+    """NPU.FRSQRT: f[rd] = 1/sqrt(mem_f32[rs1]).
 
     Reads one float32 from memory at address rs1, computes 1/sqrt(x),
     and writes the float32 result to f[rd].

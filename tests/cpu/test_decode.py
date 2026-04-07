@@ -758,9 +758,9 @@ class TestInstructionMnemonicFpNpu:
         word = _encode_fp_npu_r(2, 3, 2, 0b000, 1)
         assert instruction_mnemonic(decode(word)) == "NPU.FVEXP"
 
-    def test_fvrsqrt(self) -> None:
+    def test_frsqrt(self) -> None:
         word = _encode_fp_npu_r(3, 0, 2, 0b000, 1)
-        assert instruction_mnemonic(decode(word)) == "NPU.FVRSQRT"
+        assert instruction_mnemonic(decode(word)) == "NPU.FRSQRT"
 
     def test_fvmul(self) -> None:
         word = _encode_fp_npu_r(4, 3, 2, 0b000, 1)

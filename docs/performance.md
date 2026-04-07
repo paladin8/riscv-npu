@@ -74,7 +74,7 @@ In a neural network workload, NPU instructions dominate execution time different
 | ReLU (per element)   | 3 (compare + branch + move)    | 1 FRELU                     | ~3x            |
 | GELU (per element)   | ~20 (FP erf approximation)     | 1 FGELU                     | ~20x           |
 | Softmax (N elems)    | ~8N (exp loop + sum + div)     | FVMAX+FVEXP+FVREDUCE+FVMUL  | ~8x            |
-| RMSNorm (N elems)    | ~6N (sq loop + sum + sqrt)     | FVMAC+FRSTACC+FVRSQRT+FVMUL | ~6x            |
+| RMSNorm (N elems)    | ~6N (sq loop + sum + sqrt)     | FVMAC+FRSTACC+FRSQRT+FVMUL  | ~6x            |
 
 The NPU vector instructions (FVMAC, FVEXP, FVMUL) are the highest-value acceleration targets because they collapse O(N) scalar loops into a single instruction dispatch.
 

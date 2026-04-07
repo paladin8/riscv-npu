@@ -7,11 +7,11 @@ Tiny character-level transformer runs on emulator using FP NPU instructions. All
 
 1. **Task**: Character-level language model (predict next character). Byte-level vocab (256 entries), no tokenizer needed.
 2. **Precision**: All float32. Weights stored as float32 C arrays. Activations are float32. No int8, no Q16.16, no shifts or scales.
-3. **Normalization**: RMSNorm (not LayerNorm). Uses FVMAC for sum-of-squares, FVRSQRT for reciprocal sqrt.
+3. **Normalization**: RMSNorm (not LayerNorm). Uses FVMAC for sum-of-squares, FRSQRT for reciprocal sqrt.
 4. **NPU instructions used**: All 10 FP NPU instructions (opcode 0x2B) — already implemented.
    - FMACC, FVMAC, FRSTACC — dot products and linear layers
    - FRELU, FGELU — activations
-   - FVEXP, FVRSQRT, FVMUL, FVREDUCE, FVMAX — softmax and RMSNorm
+   - FVEXP, FRSQRT, FVMUL, FVREDUCE, FVMAX — softmax and RMSNorm
 5. **Model**: Embedding dim 64, 4 heads (head_dim=16), 2 layers, byte-level vocab (256), context 32 tokens, ~135K params, ~527KB float32.
 6. **Softmax strategy**: FVMAX (find max), subtract max, FVEXP, FVREDUCE (sum), set facc = 1/sum, FVMUL (normalize). All native float32.
 7. **Memory budget**: ~527KB weights + ~32KB KV cache + scratch < 1MB. Fits in 4MB RAM.
@@ -25,7 +25,7 @@ All instructions use opcode 0x2B (custom-1), R-type encoding. Already implemente
 | 0      | 0      | FMACC      | facc += f[rs1] * f[rs2]                                     |
 | 0      | 1      | FVMAC      | facc += dot(mem_f32[rs1..+n], mem_f32[rs2..+n])             |
 | 0      | 2      | FVEXP      | dst_f32[i] = exp(src_f32[i]) for i in 0..n-1                |
-| 0      | 3      | FVRSQRT    | f[rd] = 1/sqrt(mem_f32[rs1])                                |
+| 0      | 3      | FRSQRT     | f[rd] = 1/sqrt(mem_f32[rs1])                                |
 | 0      | 4      | FVMUL      | dst_f32[i] = src_f32[i] * (float32)facc for i in 0..n-1    |
 | 0      | 5      | FVREDUCE   | f[rd] = sum(mem_f32[rs1..+n])                               |
 | 0      | 6      | FVMAX      | f[rd] = max(mem_f32[rs1..+n])                               |
@@ -202,7 +202,7 @@ static void rmsnorm(
     float mean_sq = sum_sq / (float)dim + 1e-5f;
 
     /* 1/sqrt(mean_sq) */
-    float scale = NPU_FVRSQRT(&mean_sq);
+    float scale = NPU_FRSQRT(&mean_sq);
 
     /* output[i] = input[i] * gamma[i] * scale */
     for (int i = 0; i < dim; i++) {

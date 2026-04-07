@@ -139,7 +139,7 @@ _FP_NPU_F3_0_MNEMONICS: dict[int, str] = {
     0: "NPU.FMACC",
     1: "NPU.FVMAC",
     2: "NPU.FVEXP",
-    3: "NPU.FVRSQRT",
+    3: "NPU.FRSQRT",
     4: "NPU.FVMUL",
     5: "NPU.FVREDUCE",
     6: "NPU.FVMAX",
@@ -376,7 +376,7 @@ def _disasm_fp_npu_f3_0(inst: Instruction) -> str:
         return f"{name} {_reg(inst.rd)}, {_reg(inst.rs1)}, {_reg(inst.rs2)}"
     elif f7 == 2:  # FVEXP: x[rd]=count, x[rs1]=src, x[rs2]=dst
         return f"{name} {_reg(inst.rd)}, {_reg(inst.rs1)}, {_reg(inst.rs2)}"
-    elif f7 == 3:  # FVRSQRT: f[rd]=result, x[rs1]=addr
+    elif f7 == 3:  # FRSQRT: f[rd]=result, x[rs1]=addr
         return f"{name} {_freg(inst.rd)}, {_reg(inst.rs1)}"
     elif f7 == 4:  # FVMUL: x[rd]=count, x[rs1]=src, x[rs2]=dst
         return f"{name} {_reg(inst.rd)}, {_reg(inst.rs1)}, {_reg(inst.rs2)}"

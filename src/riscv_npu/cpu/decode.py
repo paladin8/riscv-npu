@@ -215,7 +215,7 @@ _NPU_F3_MNEMONICS: dict[int, str] = {
 
 # FP NPU funct3=0 sub-dispatch by funct7
 _FP_NPU_F7_MNEMONICS: dict[int, str] = {
-    0: "NPU.FMACC", 1: "NPU.FVMAC", 2: "NPU.FVEXP", 3: "NPU.FVRSQRT",
+    0: "NPU.FMACC", 1: "NPU.FVMAC", 2: "NPU.FVEXP", 3: "NPU.FRSQRT",
     4: "NPU.FVMUL", 5: "NPU.FVREDUCE", 6: "NPU.FVMAX",
 }
 
