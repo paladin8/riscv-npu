@@ -3,10 +3,14 @@
 
 COMMON_DIR := $(dir $(lastword $(MAKEFILE_LIST)))
 
-CC      := riscv64-unknown-elf-gcc
-AS      := riscv64-unknown-elf-as
-LD      := riscv64-unknown-elf-ld
-OBJCOPY := riscv64-unknown-elf-objcopy
+# Auto-detect toolchain prefix: riscv64-unknown-elf- or riscv64-elf-
+CROSS_PREFIX := $(shell which riscv64-unknown-elf-gcc >/dev/null 2>&1 \
+	&& echo riscv64-unknown-elf- || echo riscv64-elf-)
+
+CC      := $(CROSS_PREFIX)gcc
+AS      := $(CROSS_PREFIX)as
+LD      := $(CROSS_PREFIX)ld
+OBJCOPY := $(CROSS_PREFIX)objcopy
 
 ARCH    := rv32imf
 ABI     := ilp32f
